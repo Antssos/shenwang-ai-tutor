@@ -1,0 +1,50 @@
+# Dependencies and build output
+node_modules/
+dist/
+.vite/
+.wrangler/
+.vercel/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+*.local
+
+# Logs and test output
+*.log
+*.out
+coverage/
+
+# 账号与对话数据库只保存在本地或服务器持久化卷
+/worker/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 知识库实际数据仅保存在本地，不上传 Git
+/knowledge/**
+
+# 允许上传不包含隐私的管理说明和模板
+!/knowledge/_management/
+!/knowledge/_management/README.md
+!/knowledge/_management/document_manifest_template.csv
+
+# 本地原始资料、工具状态与临时文件
+/知识库/
+/.agents/
+/.codex/
+/tmp/

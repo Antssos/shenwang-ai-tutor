@@ -1,0 +1,4 @@
+doc_id,source_file,clean_file,title,knowledge_base,audience,grade,subject,unit,topic,document_type,authority_level,status,version,published_at,updated_at,source_owner,review_owner,confidentiality,duplicate_of,notes
+SW-CENTER-0001,知识库/申望儿童关爱服务A/申望儿童关爱服务（A）.pdf,knowledge/center-public/center-profile/申望儿童关爱中心A.md,申望儿童关爱中心 A,center-public,child_parent_teacher,,,,中心简介与章程,center_profile,official,active,v1.0,2025-06-01,,申望儿童关爱服务中心,技术组,public,,已按主题重整为 Markdown；原文件中中心名称存在“武穴市申望儿童关爱服务中心”与“武穴市四望镇申望儿童关爱服务中心”两种表述，保留原文待管理方核验。
+LEARNING-EXAMPLE-0001,知识库/待补充/示例文件.pdf,knowledge/learning/grade-5/math/示例文件.md,待补充,learning,child,5,数学,,待补充,lesson_material,reviewed,draft,v0.1,,,待补充,学科负责人,public,,模板示例；填写后替换本行。
+CARE-EXAMPLE-0001,知识库/待补充/示例文件.docx,knowledge/care-support/emotional-support/示例文件.md,待补充,care-support,child_teacher,,,情绪支持,非紧急情绪困扰,support_guideline,reviewed,draft,v0.1,,,待补充,心理专业审核人,restricted,,模板示例；完成专业审核后才可改为 active。

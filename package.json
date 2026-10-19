@@ -1,0 +1,23 @@
+{
+  "name": "wangxueban",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @wangxueban/contracts && concurrently -k \"npm run dev -w shenwang-bff\" \"npm run dev -w web\"",
+    "build": "npm run build -w @wangxueban/contracts && npm run build -w shenwang-bff && npm run build -w web",
+    "test": "npm run build -w @wangxueban/contracts && npm run test --workspaces --if-present",
+    "check": "npm test && npm run lint -w web && npm run build",
+    "start": "npm run start -w shenwang-bff"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

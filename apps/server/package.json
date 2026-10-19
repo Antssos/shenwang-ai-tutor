@@ -15,7 +15,8 @@
   "dependencies": {
     "@hono/node-server": "^2.0.11",
     "hono": "^4.12.8",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@wangxueban/contracts": "*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

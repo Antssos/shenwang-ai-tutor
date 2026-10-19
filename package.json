@@ -15,11 +15,17 @@
     "build": "npm run build -w @wangxueban/contracts && npm run build -w shenwang-bff && npm run build -w web",
     "test": "npm run build -w @wangxueban/contracts && npm run test --workspaces --if-present",
     "check": "npm test && npm run lint -w web && npm run build",
-    "start": "npm run start -w shenwang-bff"
+    "start": "npm run start -w shenwang-bff",
+    "test:e2e": "playwright test",
+    "cli": "npm run cli -w shenwang-bff --",
+    "format": "prettier --write apps/server/src packages/contracts/src tests/e2e scripts playwright.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "concurrently": "^9.2.1",
     "prettier": "^3.9.10"
+  },
+  "overrides": {
+    "katex": "^0.18.2"
   }
 }

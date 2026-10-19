@@ -8,8 +8,8 @@
 
 - Web：已完成中文首页、账号入口、服务端聊天记录、Markdown/LaTeX 渲染、消息编辑和流式回答。
 - BFF：已完成账号注册登录、SQLite 持久化、密码摘要、HttpOnly 会话、Dify Key 隔离、限流和 SSE 转换。
-- Dify：社区版已部署到阿里云，代表性学习、中心信息、情绪、安全和边界问题已联调。
-- 部署：前端使用 Netlify；BFF 的 Docker Compose 已包含持久化数据卷，公网 HTTPS 入口尚待配置。
+- Dify：原阿里云社区版实例已关闭；仓库保留 Chatflow DSL，代表性学习、中心信息、情绪、安全和边界问题曾完成联调。
+- 部署：前端使用 Netlify；BFF 的 Docker Compose 已包含持久化数据卷，公网 HTTPS 入口需要在新服务器重新配置。
 - 微信小程序：仅保留目录，尚未开发。
 
 ## 系统结构
@@ -64,8 +64,8 @@ npm.cmd run build
 ## 部署
 
 - 前端：Netlify 托管 `web/`，只配置公开的 `VITE_API_BASE_URL`。
-- BFF：阿里云 Docker 常驻，只监听宿主机 `127.0.0.1:3000`。
-- 公网入口：正式 Cloudflare Tunnel 将 HTTPS 请求转发到 BFF，不开放公网 3000 端口。
+- BFF：在新服务器使用 Docker 常驻，只监听宿主机 `127.0.0.1:3000`。
+- 公网入口：固定 Cloudflare Tunnel 或 HTTPS 反向代理将请求转发到 BFF，不开放公网 3000 端口。Compose 中的 Quick Tunnel 仅在显式启用 `quick-tunnel` profile 时启动。
 - Dify：保持现有独立 Compose，不由本仓库的部署文件管理。
 
 完整设计见 [`docs/前端v0.1技术方案.md`](docs/前端v0.1技术方案.md)，服务器操作入口见 [`deploy/README.md`](deploy/README.md)。

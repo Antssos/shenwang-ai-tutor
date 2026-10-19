@@ -2,7 +2,7 @@
 
 本目录管理望学伴 BFF，不接管现有 Dify 容器。BFF 只监听服务器 `127.0.0.1:3000`，由 HTTPS 反向代理或 Tunnel 对外提供服务。
 
-当前 Compose 同时包含一个 Cloudflare Quick Tunnel，便于短期联调或演示。它会在日志中给出随机的 `trycloudflare.com` HTTPS 地址；容器重建后地址可能变化，因此正式运行应改用受账号管理的固定 Tunnel 或独立 HTTPS 反向代理。
+当前 Compose 保留一个 Cloudflare Quick Tunnel 配置，且放在 `quick-tunnel` profile 中。默认启动只运行 BFF；临时联调时显式启用该 profile。Quick Tunnel 会在日志中给出随机的 `trycloudflare.com` HTTPS 地址，容器重建后地址可能变化。正式运行使用受账号管理的固定 Tunnel 或独立 HTTPS 反向代理。
 
 ## 持久化结构
 
@@ -24,6 +24,12 @@ cp .env.example .env
 chmod 600 .env
 nano .env
 sudo docker compose -f docker-compose.bff.yml up -d --build
+```
+
+临时联调需要 Quick Tunnel 时使用：
+
+```bash
+sudo docker compose -f docker-compose.bff.yml --profile quick-tunnel up -d --build
 ```
 
 `.env` 至少填写：Dify Service API Key、精确前端来源、私密邀请码、随机匿名化密钥和正式数据库路径。示例文件故意将敏感值留空；缺少这些值时 BFF 会拒绝启动。HTTPS 环境设置 `COOKIE_SECURE=true`。

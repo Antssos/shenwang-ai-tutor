@@ -50,6 +50,6 @@ npm.cmd run build
 VITE_API_BASE_URL=https://正式的-BFF-域名
 ```
 
-正式运行应在 Netlify 显式配置该变量。固定 API 子域名完成前，源码暂时保留公开的 Quick Tunnel BFF 地址作为兜底；这里只能填写公开的 BFF 地址，不能填写 Dify Key、邀请码或任何服务器密钥。
+正式构建必须在 Netlify 显式配置该变量。缺少变量时，生产页面会显示“服务地址尚未配置”。这里只能填写公开的 BFF 地址，不能填写 Dify Key、邀请码或任何服务器密钥。
 
 `public/_redirects` 已配置单页应用路由回退。

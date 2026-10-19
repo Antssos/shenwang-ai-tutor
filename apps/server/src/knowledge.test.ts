@@ -21,7 +21,7 @@ describe("knowledge publishing and retrieval", () => {
       );
       writeFileSync(
         join(root, "manifest.csv"),
-        "doc_id,clean_file,title,knowledge_base,status,version\ncenter,docs/center.md,中心课程,center-public,active,v1\nstudy,docs/study.md,苹果学习,learning,active,v1\ndraft,absent.md,未审核,learning,draft,v1\n",
+        "doc_id,clean_file,title,knowledge_base,status,version\r\ncenter,docs/center.md,中心课程,center-public,active,v1\nstudy,docs/study.md,苹果学习,learning,active,v1\ndraft,absent.md,未审核,learning,draft,v1\n",
       );
       const imported = await kb.import(
         root,

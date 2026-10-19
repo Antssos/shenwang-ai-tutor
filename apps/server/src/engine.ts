@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "./config.js";
@@ -11,6 +12,7 @@ export function danger(text: string) {
   );
 }
 export class Engine {
+  readonly version: string;
   readonly provider: Provider;
   readonly knowledge: Knowledge;
   readonly routes: Record<
@@ -26,6 +28,16 @@ export class Engine {
     this.routes = JSON.parse(
       readFileSync(resolve(config.root, "config/routes.json"), "utf8"),
     );
+    this.version = createHash("sha256")
+      .update(
+        JSON.stringify(this.routes) +
+          ["study.md", "center.md", "general.md", "care.md"]
+            .map((name) =>
+              readFileSync(resolve(config.root, "prompts", name), "utf8"),
+            )
+            .join("\n"),
+      )
+      .digest("hex");
   }
   history(id: string): ModelMessage[] {
     return this.store

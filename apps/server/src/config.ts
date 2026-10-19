@@ -18,8 +18,12 @@ const schema = z.object({
   MAX_INPUT_LENGTH: z.coerce.number().int().min(1).max(5000).default(1000),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(4096).default(1024),
   DAILY_REQUESTS: z.coerce.number().int().positive().default(100),
-  DAILY_TOKEN_BUDGET: z.coerce.number().int().positive().default(100000),
-  GLOBAL_DAILY_TOKEN_BUDGET: z.coerce.number().int().positive().default(200000),
+  DAILY_TOKEN_BUDGET: z.coerce.number().int().positive().default(1000000),
+  GLOBAL_DAILY_TOKEN_BUDGET: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2000000),
   MAX_CONCURRENT: z.coerce.number().int().min(1).max(5).default(2),
   REQUEST_TIMEOUT_MS: z.coerce
     .number()

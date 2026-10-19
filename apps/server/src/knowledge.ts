@@ -70,7 +70,8 @@ export class Knowledge {
     model = "",
   ) {
     const base = realpathSync(root),
-      rows = parse(readFileSync(manifest, "utf8"), {
+      rows = parse(readFileSync(manifest, "utf8").replace(/\r\n?/g, "\n"), {
+        record_delimiter: "\n",
         columns: true,
         bom: true,
         skip_empty_lines: true,

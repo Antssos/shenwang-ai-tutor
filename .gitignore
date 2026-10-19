@@ -18,7 +18,7 @@ dist/
 coverage/
 
 # 账号与对话数据库只保存在本地或服务器持久化卷
-/worker/data/
+/apps/server/data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

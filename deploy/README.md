@@ -1,66 +1,58 @@
-# 望学伴 BFF 服务器部署
+# 单容器部署（暂不绑定域名）
 
-本目录管理望学伴 BFF，不接管现有 Dify 容器。BFF 只监听服务器 `127.0.0.1:3000`，由 HTTPS 反向代理或 Tunnel 对外提供服务。
-
-当前 Compose 保留一个 Cloudflare Quick Tunnel 配置，且放在 `quick-tunnel` profile 中。默认启动只运行 BFF；临时联调时显式启用该 profile。Quick Tunnel 会在日志中给出随机的 `trycloudflare.com` HTTPS 地址，容器重建后地址可能变化。正式运行使用受账号管理的固定 Tunnel 或独立 HTTPS 反向代理。
-
-## 持久化结构
-
-```text
-HTTPS 入口
-  └─ 127.0.0.1:3000
-       └─ wangxueban-bff
-            ├─ /data/wangxueban.sqlite
-            └─ Dify API
-```
-
-Docker 命名卷 `wangxueban_data` 保存账号和对话记录。重新构建容器不会删除该卷；删除卷会永久删除账号和历史，因此应定期备份。
-
-## 首次部署
+构建在 CI 或开发环境完成，不在 2 GiB 共享服务器上编译。应用在单个容器中提供静态前端和 API。
 
 ```bash
-cd /opt/shenwang-ai-tutor/deploy
-cp .env.example .env
-chmod 600 .env
-nano .env
-sudo docker compose -f docker-compose.bff.yml up -d --build
+docker build -t wangxueban:0.2.0 .
+cp deploy/.env.example deploy/.env
+chmod 600 deploy/.env
+# 填写随机 INVITE_CODE 和实际模型配置。不要提交 deploy/.env。
+docker compose --env-file deploy/.env -f deploy/compose.yml config --quiet
+docker compose --env-file deploy/.env -f deploy/compose.yml up -d
 ```
 
-临时联调需要 Quick Tunnel 时使用：
+上线使用已核对的镜像 ID/registry digest，并记录对应 Git SHA。无需先部署 Caddy 或设置 DNS。
+
+`127.0.0.1:3000` 是宿主机回环端口，不对外开放。通过用户已有 SSH 连接方式，在自己的电脑转发端口：
 
 ```bash
-sudo docker compose -f docker-compose.bff.yml --profile quick-tunnel up -d --build
+ssh -p 2222 -L 3000:127.0.0.1:3000 local-agent@SERVER_IP
 ```
 
-`.env` 至少填写：Dify Service API Key、精确前端来源、私密邀请码、随机匿名化密钥和正式数据库路径。示例文件故意将敏感值留空；缺少这些值时 BFF 会拒绝启动。HTTPS 环境设置 `COOKIE_SECURE=true`。
+然后浏览器打开 `http://127.0.0.1:3000`。`APP_ORIGIN` 与该地址一致，Cookie 为 HttpOnly、SameSite=Lax；这里的 HTTP 仅运行于回环与 SSH 加密转发内。正式 HTTPS 上线时再设置精确 `APP_ORIGIN` 和 `COOKIE_SECURE=true`。不要把当前 HTTP 账号服务直接暴露到公网。
 
-匿名化密钥可在服务器上用 `openssl rand -hex 32` 生成。邀请码应单独分发，不要写入源码、文档、截图或聊天记录。
+## 资源与共存
 
-## 验证
+- 单容器内存上限 384 MiB、CPU 上限 0.5 核、PID 上限 128。
+- Node heap 上限 192 MiB，数据库使用独立命名卷。
+- rootfs 只读，非 root 用户，移除 Linux capabilities；临时目录和日志有上限。
+- 全机只在将来需要时共用一份 HTTPS 入口；每个项目独立 Compose、卷、配置与资源限制。
+- 探针 `/health/live` 检查进程，`/health/ready` 检查数据库并报告模型配置状态。它不代表供应商连通性或模型质量通过。
+
+不要将公开仓库 PR 的脚本放到具有 sudo 的自托管 Runner 执行。构建/测试使用 GitHub 托管 Runner；目标机只运行受控发布任务。当前仓库的 CI 不连接目标机，也不读取私有知识。
+
+## 导入私有知识
+
+将私库知识目录放在服务器受控路径（不位于静态资源目录），临时以只读方式挂载到同一镜像执行 CLI。运行 Compose 服务前后均可导入，期间不发起聊天生成：
 
 ```bash
-sudo docker compose -f docker-compose.bff.yml ps
-curl http://127.0.0.1:3000/healthz
-sudo docker compose -f docker-compose.bff.yml logs --tail=100 bff
-sudo docker volume inspect wangxueban_wangxueban_data
+docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps \
+  -v /secure/knowledge:/input:ro app \
+  node apps/server/dist/cli.js import /input /input/_management/document_manifest.csv
 ```
 
-## 备份数据库
+同一数据库只运行一个应用实例。导入会校验路径、active 状态和库类别，重新切分/索引并原子替换，未完成不会破坏旧索引。嵌入不可用时，若未配置嵌入密钥可明确使用关键词索引；已配置却调用失败则导入失败，避免悄悄发布不完整语义索引。
 
-先停止 BFF 写入，再备份整个 Docker 数据卷。恢复时必须同时恢复 `.sqlite`、`.sqlite-wal` 和 `.sqlite-shm`（如存在），不要只复制其中一个活动文件。
-
-## 更新
+## 备份、升级与回滚
 
 ```bash
-sudo docker compose -f docker-compose.bff.yml up -d --build
+docker compose --env-file deploy/.env -f deploy/compose.yml exec app \
+  node apps/server/dist/cli.js backup /data/backup.sqlite
+docker compose --env-file deploy/.env -f deploy/compose.yml cp app:/data/backup.sqlite /secure/backups/backup.sqlite
 ```
 
-更新后检查登录、跨设备历史读取、Markdown/公式显示和一条真实流式回答。
+将备份加密并传至机器之外。恢复必须停止服务，用备份替换主库，删除旧的对应 WAL/SHM（先保留完整旧数据副本），修复卷内权限并执行 doctor，再启动。不要对运行中的数据库使用直接文件复制。
 
-## 禁止事项
+升级前备份，固定新旧镜像。SQL 迁移受 `migrations` 表管理；当前版本不能直接读取旧 BFF 数据库格式。旧数据若后来找到，应先编写离线导入工具和核对结果，不能覆盖新库。
 
-- 不要在安全组开放 3000、数据库、Redis 或向量数据库端口。
-- 不要把 `ALLOWED_ORIGINS` 设置为 `*`。
-- 不要输出或提交 `.env`、数据库、Cookie、密码和 Dify Key。
-- 不要把邀请码或匿名化密钥写进 `.env.example`；已经公开过的邀请码必须轮换。
-- 不要执行 `docker compose down -v`，它会删除持久化数据卷。
+发布回滚需要检查旧镜像是否兼容当前 schema；不兼容时从升级前备份恢复，并明确该时间点之后的数据影响。每次发布至少检查注册登录、历史、六类路由、停止、来源与跨账号隔离。

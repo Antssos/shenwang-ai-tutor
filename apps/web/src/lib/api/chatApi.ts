@@ -29,22 +29,12 @@ export async function loadPublicConfig(signal?: AbortSignal): Promise<PublicConf
 }
 
 export async function stopGeneration(taskId: string) {
-  await fetch(`${apiBase()}/api/v1/chat/${encodeURIComponent(taskId)}/stop`, {
+  const response = await fetch(`${apiBase()}/api/v1/chat/${encodeURIComponent(taskId)}/stop`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
   })
-}
-
-export async function deleteConversation(conversationId: string) {
-  const response = await fetch(
-    `${apiBase()}/api/v1/conversations/${encodeURIComponent(conversationId)}`,
-    {
-      method: 'DELETE',
-      credentials: 'include',
-    },
-  )
-  if (!response.ok) throw new Error('云端会话没有成功清除')
+  if (!response.ok) throw new Error('没有成功停止回答。')
 }
 
 export async function streamChat({ request, signal, onEvent }: StreamChatOptions) {

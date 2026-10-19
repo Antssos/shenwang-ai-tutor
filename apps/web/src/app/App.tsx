@@ -5,6 +5,7 @@ import { AuthPage } from '../features/auth/AuthPage'
 import { HomePage } from '../features/home/HomePage'
 import { loadAccountSession, logoutUser } from '../lib/auth'
 
+const AdminPage = lazy(() => import('../features/admin/AdminPage').then(module => ({default: module.AdminPage})))
 const ChatPage = lazy(() => import('../features/chat/ChatPage').then((module) => ({ default: module.ChatPage })))
 
 function MarketingHeader({ username }: { username: string | null }) {
@@ -49,11 +50,11 @@ function App() {
   }, [])
 
   async function logout() {
-    await logoutUser().catch(() => undefined)
+    await logoutUser()
     setUsername(null)
   }
 
-  if (!sessionReady) {
+  if (!sessionReady && (chatRoute || location.pathname === '/admin')) {
     return <main className="app-loading" aria-label="正在进入望学伴"><span className="brand-mark">望</span></main>
   }
 
@@ -72,6 +73,7 @@ function App() {
           </Suspense>
         ) : <Navigate to="/login" replace />}
       />
+      <Route path="/admin" element={<Suspense fallback={<p>正在加载…</p>}><AdminPage /></Suspense>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

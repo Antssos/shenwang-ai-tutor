@@ -15,7 +15,7 @@ describe('account authentication', () => {
 
     await expect(registerUser('小望', 'secret888', 'test-invite-code')).resolves.toBe('小望')
     const request = fetchMock.mock.calls[0]
-    expect(request?.[0]).toBe('https://api.example.test/api/v1/register')
+    expect(request?.[0]).toBe('/api/v1/register')
     expect(request?.[1]).toMatchObject({ method: 'POST', credentials: 'include' })
   })
 

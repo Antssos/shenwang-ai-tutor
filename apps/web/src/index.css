@@ -449,3 +449,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.history-entry { display:flex; align-items:center; gap:4px; }
+.history-entry .history-item { flex:1; min-width:0; }
+.history-entry > button:last-child { background:transparent; border:0; color:inherit; cursor:pointer; padding:8px; }
+.service-notice { padding:10px 20px; background:#fff3d4; color:#654b13; margin:0; text-align:center; }
+
+.admin-page { max-width:1000px; margin:40px auto; padding:24px; overflow-x:auto; }
+.admin-page table { width:100%; border-collapse:collapse; }
+.admin-page th,.admin-page td { text-align:left; padding:12px; border-bottom:1px solid #ddd; }

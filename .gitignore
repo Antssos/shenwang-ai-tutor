@@ -48,3 +48,8 @@ Thumbs.db
 /.agents/
 /.codex/
 /tmp/
+
+/data/
+/test-results/
+/playwright-report/
+/.artifacts/

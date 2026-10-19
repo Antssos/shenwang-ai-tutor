@@ -48,7 +48,7 @@ export async function loginUser(username: string, password: string) {
 }
 
 export async function logoutUser() {
-  await accountRequest('/api/v1/session', {
+  await readResponse(await accountRequest('/api/v1/session', {
     method: 'DELETE',
-  })
+  }))
 }

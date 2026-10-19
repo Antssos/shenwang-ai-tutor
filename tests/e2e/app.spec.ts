@@ -87,3 +87,42 @@ test("admin can unpublish evidence while ordinary sessions cannot access admin A
     page.getByRole("button", { name: "发布", exact: true }),
   ).toBeVisible();
 });
+
+test("a delayed history refresh cannot reopen a conversation after starting a new one", async ({
+  page,
+}) => {
+  await page.goto("/register");
+  await page.getByLabel("用户名").fill("raceuser");
+  await page.getByLabel("密码", { exact: true }).fill("browser-password");
+  await page.getByLabel("邀请码").fill("test-only-invitation");
+  await page.getByRole("button", { name: "注册并进入对话" }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => {
+      release = r;
+    }),
+    pending = new Promise<void>((r) => {
+      entered = r;
+    });
+  let delayed = false;
+  await page.route("**/api/v1/history/*", async (route) => {
+    if (route.request().method() === "GET" && !delayed) {
+      delayed = true;
+      entered();
+      await gate;
+    }
+    await route.continue();
+  });
+  await page.locator("textarea").last().fill("你好");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await pending;
+  await page.getByRole("button", { name: "开启新对话" }).click();
+  const refreshed = page.waitForResponse(
+    (r) => r.url().includes("/api/v1/history/") && r.status() === 200,
+  );
+  release();
+  await expect(page.getByText("今天想聊点什么？")).toBeVisible();
+  await refreshed;
+  await expect(page.getByText("今天想聊点什么？")).toBeVisible();
+  await expect(page.locator(".message-row")).toHaveCount(0);
+});

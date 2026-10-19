@@ -74,6 +74,17 @@ try {
         "Commands: doctor, import, admin, disable, backup, cleanup",
       );
   }
+} catch (error) {
+  // CSV parser errors may embed complete private records: never print their payloads.
+  console.error(
+    JSON.stringify({
+      code: "COMMAND_FAILED",
+      category: error instanceof Error ? error.name : "UnknownError",
+      message:
+        "Verify command arguments, input format, permissions and provider configuration.",
+    }),
+  );
+  process.exitCode = 1;
 } finally {
   store.close();
 }

@@ -366,8 +366,19 @@ export function createApp(
       } finally {
         if (heartbeat) clearInterval(heartbeat);
         clearTimeout(timeout);
-        store.finish(run, content, status, sources, route);
-        active.delete(run.id);
+        try {
+          store.finish(run, content, status, sources, route);
+        } finally {
+          active.delete(run.id);
+        }
+        console.info(
+          JSON.stringify({
+            event: "generation_finished",
+            runId: run.id,
+            route,
+            status,
+          }),
+        );
         await send({
           type: "done",
           taskId: run.id,
@@ -390,6 +401,7 @@ export function createApp(
       provider: config.AI_PROVIDER,
       model: config.MODEL_NAME || null,
       activeRuns: active.size,
+      promptVersion: engine.version,
       documents: engine.knowledge.documents(),
       quotas: store.db
         .prepare(

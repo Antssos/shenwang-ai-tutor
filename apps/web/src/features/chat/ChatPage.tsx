@@ -57,6 +57,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const viewRevisionRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const isBusy = state.phase === "routing" || state.phase === "streaming";
@@ -150,6 +151,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
     conversationId: string,
     editMessageId?: string,
   ) {
+    const revision = ++viewRevisionRef.current;
     const controller = new AbortController();
     abortControllerRef.current = controller;
     let savedId = conversationId;
@@ -173,7 +175,11 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
         },
       });
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (
+        abortControllerRef.current !== controller ||
+        (error instanceof DOMException && error.name === "AbortError")
+      )
+        return;
       dispatch({
         type: "fail",
         message:
@@ -187,6 +193,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
         if (savedId) {
           try {
             const saved = await loadConversation(savedId);
+            if (viewRevisionRef.current !== revision) return;
             dispatch({
               type: "hydrate",
               messages: saved.messages,
@@ -268,6 +275,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
   }
 
   function startNewConversation() {
+    viewRevisionRef.current++;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setActiveLocalId(randomId("chat"));
@@ -277,10 +285,12 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
   }
 
   async function openConversation(conversation: SavedConversation) {
+    const revision = ++viewRevisionRef.current;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     try {
       const saved = await loadConversation(conversation.id);
+      if (viewRevisionRef.current !== revision) return;
       setActiveLocalId(saved.id);
       dispatch({
         type: "hydrate",

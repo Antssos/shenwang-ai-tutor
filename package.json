@@ -18,6 +18,8 @@
     "start": "npm run start -w shenwang-bff"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@playwright/test": "^1.64.1",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.9.10"
   }
 }

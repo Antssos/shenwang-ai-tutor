@@ -1,0 +1,12 @@
+CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT NOT NULL,username_key TEXT UNIQUE NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,disabled INTEGER NOT NULL DEFAULT 0,admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
+CREATE TABLE sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
+CREATE INDEX sessions_expiry ON sessions(expires_at);
+CREATE TABLE conversations(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,parent_id TEXT);
+CREATE INDEX conversations_owner ON conversations(user_id,updated_at DESC,id);
+CREATE TABLE messages(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,position INTEGER NOT NULL,role TEXT NOT NULL CHECK(role IN ('user','assistant')),content TEXT NOT NULL,status TEXT NOT NULL,sources TEXT NOT NULL DEFAULT '[]',UNIQUE(conversation_id,position));
+CREATE TABLE runs(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,request_key TEXT NOT NULL,message_id TEXT NOT NULL,status TEXT NOT NULL,route TEXT,created_at TEXT NOT NULL,UNIQUE(user_id,request_key));
+CREATE TABLE quotas(subject TEXT NOT NULL,day TEXT NOT NULL,requests INTEGER NOT NULL DEFAULT 0,tokens INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(subject,day));
+CREATE TABLE documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,knowledge_base TEXT NOT NULL,status TEXT NOT NULL,version TEXT NOT NULL,hash TEXT NOT NULL);
+CREATE TABLE chunks(id TEXT PRIMARY KEY,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,section TEXT NOT NULL,content TEXT NOT NULL,vector TEXT,embedding_model TEXT);
+CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id UNINDEXED,terms,tokenize='unicode61');
+CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);

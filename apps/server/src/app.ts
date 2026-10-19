@@ -1,250 +1,427 @@
-import { randomUUID } from 'node:crypto'
-import { Hono } from 'hono'
-import type { Context, Next } from 'hono'
-import { cors } from 'hono/cors'
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { secureHeaders } from 'hono/secure-headers'
-import type { AppConfig } from './config.js'
-import { constantTimeEqual } from './auth.js'
-import { chatRequestSchema, conversationSchema, credentialsSchema, registerSchema } from './contracts.js'
-import { createMinuteRateLimiter, createRateLimiter } from './rateLimit.js'
-import { anonymousUser, DifyService, DifyUpstreamError } from './services/dify.js'
-import { AppStore } from './store.js'
-import type { Account } from './store.js'
+import { randomUUID } from "node:crypto";
+import { Hono } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import { bodyLimit } from "hono/body-limit";
+import { secureHeaders } from "hono/secure-headers";
+import { streamSSE } from "hono/streaming";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import {
+  chatRequestSchema,
+  credentialsSchema,
+  registerSchema,
+  type TeamEvent,
+} from "@wangxueban/contracts";
+import { constantTimeEqual } from "./auth.js";
+import type { AppConfig } from "./config.js";
+import { AppStore, type Account } from "./store.js";
+import { Engine } from "./engine.js";
+import { createRateLimiter } from "./rateLimit.js";
 
-type AppVariables = { account: Account }
-type AppContext = Context<{ Variables: AppVariables }>
-
-function jsonError(code: string, message: string, requestId = randomUUID()) {
-  return { code, message, requestId }
-}
-
-export function createApp(config: AppConfig) {
-  const app = new Hono<{ Variables: AppVariables }>()
-  const dify = new DifyService(config)
-  const store = new AppStore(config.DATABASE_PATH)
-  const consumeRate = createMinuteRateLimiter(config.REQUESTS_PER_MINUTE)
-  const consumeDailyRate = createRateLimiter(config.REQUESTS_PER_DAY, 24 * 60 * 60 * 1000)
-  const consumeLoginAttempt = createMinuteRateLimiter(5)
-  const activeClients = new Set<string>()
-
-  app.use('*', secureHeaders())
-  app.use('/api/*', cors({
-    origin: (origin) => config.allowedOrigins.includes(origin) ? origin : '',
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Accept'],
-    credentials: true,
-    maxAge: 600,
-  }))
-
-  app.use('/api/*', async (c, next) => {
-    const origin = c.req.header('origin')
-    if (origin && !config.allowedOrigins.includes(origin)) {
-      return c.json({ code: 'ORIGIN_NOT_ALLOWED', message: '该页面不能访问此服务。' }, 403)
-    }
-    await next()
-  })
-
-  function setSessionCookie(c: AppContext, token: string) {
-    setCookie(c, config.SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: config.cookieSecure,
-      sameSite: config.cookieSecure ? 'None' : 'Lax',
-      path: '/',
-      maxAge: config.SESSION_TTL_HOURS * 60 * 60,
-    })
-  }
-
-  function sessionAccount(c: AppContext) {
-    return store.findSession(getCookie(c, config.SESSION_COOKIE_NAME))
-  }
-
-  async function requireAccount(c: AppContext, next: Next) {
-    const account = sessionAccount(c)
-    if (!account) return c.json(jsonError('AUTH_REQUIRED', '请登录后继续。'), 401)
-    c.set('account', account)
-    await next()
-  }
-
-  app.get('/healthz', (c) => c.json({ status: 'ok', service: 'wangxueban-bff' }))
-
-  app.get('/api/v1/session', (c) => {
-    const account = sessionAccount(c)
-    return c.json({ authenticated: Boolean(account), username: account?.username ?? null })
-  })
-
-  app.post('/api/v1/register', async (c) => {
-    const forwardedFor = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
-    if (!consumeLoginAttempt(`register:${forwardedFor}`)) {
-      return c.json(jsonError('RATE_LIMITED', '尝试次数过多，请一分钟后再试。'), 429)
-    }
-    const parsed = registerSchema.safeParse(await c.req.json().catch(() => null))
-    if (!parsed.success) {
-      return c.json(jsonError('INVALID_INPUT', '用户名需为 2–20 个字符，密码至少 8 个字符。'), 400)
-    }
-    if (!constantTimeEqual(parsed.data.inviteCode, config.INVITE_CODE)) {
-      return c.json(jsonError('INVITE_DENIED', '邀请码不正确。'), 403)
-    }
-    const account = store.createUser(parsed.data.username, parsed.data.password)
-    if (!account) return c.json(jsonError('USERNAME_TAKEN', '这个用户名已经注册，请直接登录。'), 409)
-    const session = store.createSession(account.id, config.SESSION_TTL_HOURS)
-    setSessionCookie(c, session.token)
-    return c.json({ authenticated: true, username: account.username }, 201)
-  })
-
-  app.post('/api/v1/login', async (c) => {
-    const forwardedFor = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
-    if (!consumeLoginAttempt(`login:${forwardedFor}`)) {
-      return c.json(jsonError('RATE_LIMITED', '尝试次数过多，请一分钟后再试。'), 429)
-    }
-    const parsed = credentialsSchema.safeParse(await c.req.json().catch(() => null))
-    if (!parsed.success) return c.json(jsonError('INVALID_INPUT', '请检查用户名和密码。'), 400)
-    const account = store.authenticate(parsed.data.username, parsed.data.password)
-    if (!account) return c.json(jsonError('LOGIN_DENIED', '用户名或密码不正确。'), 401)
-    const session = store.createSession(account.id, config.SESSION_TTL_HOURS)
-    setSessionCookie(c, session.token)
-    return c.json({ authenticated: true, username: account.username })
-  })
-
-  app.delete('/api/v1/session', (c) => {
-    const token = getCookie(c, config.SESSION_COOKIE_NAME)
-    store.deleteSession(token)
-    deleteCookie(c, config.SESSION_COOKIE_NAME, { path: '/' })
-    return c.json({ authenticated: false, username: null })
-  })
-
-  app.use('/api/v1/chat/*', requireAccount)
-  app.use('/api/v1/conversations/*', requireAccount)
-  app.use('/api/v1/history/*', requireAccount)
-
-  app.get('/api/v1/history', (c) => {
-    return c.json({ conversations: store.listConversations(c.get('account').id) })
-  })
-
-  app.put('/api/v1/history/:id', async (c) => {
-    const rawBody = await c.req.text()
-    if (new TextEncoder().encode(rawBody).byteLength > 1_000_000) {
-      return c.json(jsonError('HISTORY_TOO_LARGE', '这段对话过长，暂时无法保存。'), 413)
-    }
-    let body: unknown
-    try {
-      body = JSON.parse(rawBody || 'null')
-    } catch {
-      return c.json(jsonError('INVALID_HISTORY', '对话记录格式不正确。'), 400)
-    }
-    const parsed = conversationSchema.safeParse(body)
-    if (!parsed.success || parsed.data.id !== c.req.param('id')) {
-      return c.json(jsonError('INVALID_HISTORY', '对话记录格式不正确。'), 400)
-    }
-    store.saveConversation(c.get('account').id, parsed.data)
-    return c.json({ saved: true })
-  })
-
-  app.delete('/api/v1/history/:id', (c) => {
-    store.deleteConversation(c.get('account').id, c.req.param('id'))
-    return c.json({ deleted: true })
-  })
-
-  app.get('/api/v1/config', async (c) => {
-    try {
-      return c.json(await dify.publicConfig(c.req.raw.signal))
-    } catch {
-      return c.json({
-        appName: '望学伴',
-        openingStatement: '你好，我是望学伴。你可以问学习问题，也可以了解申望儿童关爱服务中心。',
-        suggestedQuestions: [],
-        maxInputLength: config.MAX_INPUT_LENGTH,
-        feedbackEnabled: false,
-        sourcesEnabled: false,
-      })
-    }
-  })
-
-  app.post('/api/v1/chat/stream', async (c) => {
-    const requestId = randomUUID()
-    const startedAt = Date.now()
-    let body: unknown
-    try {
-      const rawBody = await c.req.text()
-      if (new TextEncoder().encode(rawBody).byteLength > config.MAX_REQUEST_BODY_BYTES) {
-        return c.json(jsonError('INPUT_TOO_LARGE', '内容有点长，请缩短后再发送。', requestId), 413)
-      }
-      body = JSON.parse(rawBody)
-    } catch {
-      return c.json(jsonError('INVALID_INPUT', '请检查输入内容后再试。', requestId), 400)
-    }
-    const parsed = chatRequestSchema.safeParse(body)
-    if (!parsed.success) return c.json(jsonError('INVALID_INPUT', '请检查输入内容后再试。', requestId), 400)
-    if (Array.from(parsed.data.message).length > config.MAX_INPUT_LENGTH) {
-      return c.json(jsonError('INPUT_TOO_LARGE', '内容有点长，请缩短后再发送。', requestId), 413)
-    }
-
-    const account = c.get('account')
-    const forwardedFor = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
-    const anonymousClient = anonymousUser(account.id, config.ANONYMIZATION_SECRET)
-    const rateKey = `${forwardedFor}:${anonymousClient}`
-    if (!consumeRate(rateKey) || !consumeDailyRate(rateKey)) {
-      return c.json(jsonError('RATE_LIMITED', '提问太快了，请稍等一会儿。', requestId), 429)
-    }
-    if (activeClients.has(anonymousClient)) {
-      return c.json(jsonError('REQUEST_IN_PROGRESS', '上一条回答还没有结束，请稍等。', requestId), 409)
-    }
-
-    activeClients.add(anonymousClient)
-    try {
-      const stream = await dify.chat(
-        { ...parsed.data, clientId: account.id },
-        requestId,
-        c.req.raw.signal,
-        () => activeClients.delete(anonymousClient),
+type Vars = { account: Account };
+export function createApp(
+  config: AppConfig,
+  store = new AppStore(config.DATABASE_PATH, config.root),
+) {
+  const app = new Hono<{ Variables: Vars }>(),
+    engine = new Engine(config, store);
+  const active = new Map<
+    string,
+    { userId: string; conversationId: string; abort: AbortController }
+  >();
+  const loginLimit = createRateLimiter(5, 60000),
+    minuteLimit = createRateLimiter(10, 60000);
+  let authInFlight = 0;
+  const cookie = "wangxueban_session";
+  app.use(
+    "*",
+    secureHeaders({
+      contentSecurityPolicy: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
+        baseUri: ["'self'"],
+      },
+    }),
+  );
+  app.use(
+    "/api/*",
+    bodyLimit({
+      maxSize: 16384,
+      onError: (c) =>
+        c.json(
+          { code: "INPUT_TOO_LARGE", message: "内容过长，请缩短后再发送。" },
+          413,
+        ),
+    }),
+  );
+  app.use("/api/*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+      const origin = c.req.header("origin");
+      if (
+        (origin && origin !== config.APP_ORIGIN) ||
+        c.req.header("sec-fetch-site") === "cross-site"
       )
-      console.info(JSON.stringify({ event: 'chat_started', requestId, elapsedMs: Date.now() - startedAt }))
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no',
-          'X-Request-Id': requestId,
-        },
-      })
-    } catch (error) {
-      activeClients.delete(anonymousClient)
-      console.error(JSON.stringify({
-        event: 'chat_failed',
-        requestId,
-        elapsedMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message.replace(/app-[A-Za-z0-9_-]+/g, 'app-***') : 'unknown',
-      }))
-      if (error instanceof DifyUpstreamError) {
-        return c.json(jsonError(error.code, error.safeMessage, requestId), error.httpStatus)
+        return c.json(
+          { code: "ORIGIN_NOT_ALLOWED", message: "该页面不能访问此服务。" },
+          403,
+        );
+      if (
+        ["POST", "PUT", "PATCH"].includes(c.req.method) &&
+        !c.req.header("content-type")?.startsWith("application/json")
+      )
+        return c.json({ message: "需要 JSON 请求。" }, 415);
+    }
+    await next();
+  });
+  app.onError((_, c) =>
+    c.json(
+      {
+        code: "INTERNAL_ERROR",
+        message: "服务暂时不可用。",
+        requestId: randomUUID(),
+      },
+      500,
+    ),
+  );
+  app.get("/health/live", (c) => c.json({ status: "ok" }));
+  app.get("/health/ready", (c) => {
+    store.db.prepare("SELECT 1").get();
+    return c.json({
+      status: "ok",
+      model:
+        config.AI_PROVIDER === "openai" ? "configured" : config.AI_PROVIDER,
+    });
+  });
+  app.get("/healthz", (c) => c.json({ status: "ok" }));
+  app.get("/api/v1/config", (c) =>
+    c.json({
+      appName: "望学伴",
+      openingStatement:
+        "你好，我是望学伴。可以问学习问题，也可以了解申望儿童关爱服务中心。",
+      suggestedQuestions: [
+        "请介绍一下中心。",
+        "这道学习题应该从哪里开始想？",
+        "我今天有点难过。",
+      ],
+      maxInputLength: config.MAX_INPUT_LENGTH,
+      feedbackEnabled: false,
+      sourcesEnabled: true,
+      providerStatus:
+        config.AI_PROVIDER === "openai" ? "ready" : config.AI_PROVIDER,
+    }),
+  );
+  app.get("/api/v1/session", (c) => {
+    const u = store.findSession(getCookie(c, cookie));
+    return c.json({
+      authenticated: !!u,
+      username: u?.username ?? null,
+      admin: !!u?.admin,
+    });
+  });
+  for (const path of ["login", "register"] as const)
+    app.post("/api/v1/" + path, async (c) => {
+      // The app never trusts caller-supplied X-Forwarded-For; direct socket identity only.
+      let ip = "local";
+      try {
+        const info = getConnInfo(c);
+        ip = info.remote.address ?? ip;
+      } catch {
+        /* in-process tests */
       }
-      return c.json(jsonError('UPSTREAM_ERROR', 'AI 服务暂时没有正常返回。', requestId), 502)
-    }
-  })
-
-  app.post('/api/v1/chat/:taskId/stop', async (c) => {
-    const requestId = randomUUID()
+      if (!loginLimit(path + ":" + ip) || authInFlight >= 2)
+        return c.json({ message: "尝试次数过多，请稍后再试。" }, 429);
+      const parsed = (
+        path === "register" ? registerSchema : credentialsSchema
+      ).safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success)
+        return c.json({ message: "请检查用户名、密码和邀请码。" }, 400);
+      if (
+        path === "register" &&
+        !constantTimeEqual(
+          "inviteCode" in parsed.data ? String(parsed.data.inviteCode) : "",
+          config.INVITE_CODE,
+        )
+      )
+        return c.json({ message: "邀请码不正确。" }, 403);
+      authInFlight++;
+      try {
+        const u =
+          path === "register"
+            ? await store.createUser(parsed.data.username, parsed.data.password)
+            : await store.authenticate(
+                parsed.data.username,
+                parsed.data.password,
+              );
+        if (!u)
+          return c.json(
+            {
+              message:
+                path === "register" ? "用户名已注册。" : "用户名或密码不正确。",
+            },
+            path === "register" ? 409 : 401,
+          );
+        setCookie(c, cookie, store.createSession(u.id).token, {
+          httpOnly: true,
+          secure: config.COOKIE_SECURE === "true",
+          sameSite: "Lax",
+          path: "/",
+          maxAge: 604800,
+        });
+        return c.json(
+          { authenticated: true, username: u.username },
+          path === "register" ? 201 : 200,
+        );
+      } finally {
+        authInFlight--;
+      }
+    });
+  app.delete("/api/v1/session", (c) => {
+    const u = store.findSession(getCookie(c, cookie));
+    if (u)
+      for (const v of active.values()) if (v.userId === u.id) v.abort.abort();
+    store.deleteSession(getCookie(c, cookie));
+    deleteCookie(c, cookie, { path: "/" });
+    return c.json({ authenticated: false, username: null });
+  });
+  app.use("/api/v1/*", async (c, next) => {
+    const u = store.findSession(getCookie(c, cookie));
+    if (!u)
+      return c.json({ code: "AUTH_REQUIRED", message: "请先登录。" }, 401);
+    c.set("account", u);
+    await next();
+  });
+  app.get("/api/v1/history", (c) =>
+    c.json(
+      store.listConversations(c.get("account").id, c.req.query("cursor") ?? ""),
+    ),
+  );
+  app.get("/api/v1/history/:id", (c) => {
+    const row = store.conversation(c.get("account").id, c.req.param("id"));
+    return row ? c.json(row) : c.json({ message: "对话不存在。" }, 404);
+  });
+  app.delete("/api/v1/history/:id", (c) => {
+    const user = c.get("account").id,
+      id = c.req.param("id");
+    if (
+      [...active.values()].some(
+        (r) => r.userId === user && r.conversationId === id,
+      )
+    )
+      return c.json({ message: "请先停止生成。" }, 409);
+    store.deleteConversation(user, id);
+    return c.json({ deleted: true });
+  });
+  app.post("/api/v1/chat/:taskId/stop", (c) => {
+    const run = active.get(c.req.param("taskId"));
+    if (!run || run.userId !== c.get("account").id)
+      return c.json({ message: "任务不存在或已结束。" }, 404);
+    run.abort.abort("user-stopped");
+    return c.json({ result: "success" });
+  });
+  app.post("/api/v1/chat/stream", async (c) => {
+    const user = c.get("account"),
+      parsed = chatRequestSchema.safeParse(
+        await c.req.json().catch(() => null),
+      );
+    if (
+      !parsed.success ||
+      Array.from(parsed.data.message).length > config.MAX_INPUT_LENGTH
+    )
+      return c.json({ message: "请检查问题内容。" }, 400);
+    if (store.priorRun(user.id, parsed.data.requestId))
+      return c.json(
+        {
+          code: "DUPLICATE_REQUEST",
+          message: "该问题已提交，请刷新查看历史。",
+        },
+        409,
+      );
+    if (
+      [...active.values()].some((r) => r.userId === user.id) ||
+      active.size >= config.MAX_CONCURRENT
+    )
+      return c.json({ message: "正在回答其他问题，请稍后再试。" }, 429);
+    if (!minuteLimit(user.id))
+      return c.json({ message: "提问太快，请稍等。" }, 429);
+    if (
+      parsed.data.conversationId &&
+      !store.owned(user.id, parsed.data.conversationId)
+    )
+      return c.json({ message: "对话不存在。" }, 404);
+    const history = parsed.data.conversationId
+      ? store.messages(parsed.data.conversationId)
+      : [];
+    // Conservative reservation includes two model calls, UTF-8 bytes (upper bound for input tokens), evidence and outputs.
+    const reservation =
+      2 *
+        (Buffer.byteLength(JSON.stringify(history.slice(-12))) +
+          Buffer.byteLength(parsed.data.message) +
+          16000) +
+      config.MAX_OUTPUT_TOKENS +
+      80;
+    if (
+      !store.reserve(
+        user.id,
+        reservation,
+        config.DAILY_REQUESTS,
+        config.DAILY_TOKEN_BUDGET,
+        config.GLOBAL_DAILY_TOKEN_BUDGET,
+      )
+    )
+      return c.json({ message: "今日使用额度已达上限，请明天再试。" }, 429);
+    let run: ReturnType<AppStore["beginRun"]>;
     try {
-      const response = await dify.stop(c.req.param('taskId'), c.get('account').id)
-      if (!response.ok) throw new Error(`stop failed with ${response.status}`)
-      return c.json({ result: 'success', requestId })
+      run = store.beginRun(user.id, parsed.data);
     } catch {
-      return c.json(jsonError('UPSTREAM_ERROR', '没有成功停止回答。', requestId), 502)
+      return c.json({ message: "对话无法继续，请新建对话或刷新重试。" }, 400);
     }
-  })
-
-  app.delete('/api/v1/conversations/:conversationId', async (c) => {
-    const requestId = randomUUID()
-    try {
-      const response = await dify.deleteConversation(c.req.param('conversationId'), c.get('account').id)
-      if (!response.ok && response.status !== 404) throw new Error(`delete failed with ${response.status}`)
-      return c.json({ result: 'success', requestId })
-    } catch {
-      return c.json(jsonError('UPSTREAM_ERROR', '没有成功清除云端会话。', requestId), 502)
-    }
-  })
-
-  app.notFound((c) => c.json({ code: 'NOT_FOUND', message: '接口不存在。' }, 404))
-  return app
+    const abort = new AbortController(),
+      timeout = setTimeout(
+        () => abort.abort("timeout"),
+        config.REQUEST_TIMEOUT_MS,
+      );
+    active.set(run.id, {
+      userId: user.id,
+      conversationId: run.conversationId,
+      abort,
+    });
+    c.req.raw.signal.addEventListener(
+      "abort",
+      () => abort.abort("disconnected"),
+      { once: true },
+    );
+    c.header("Cache-Control", "no-cache, no-transform");
+    c.header("X-Accel-Buffering", "no");
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(() => abort.abort("disconnected"));
+      let content = "",
+        sources: Awaited<ReturnType<Engine["prepare"]>>["sources"] = [],
+        route: Awaited<ReturnType<Engine["prepare"]>>["route"] = "unsupported",
+        status = "complete",
+        lastSave = Date.now(),
+        heartbeat: ReturnType<typeof setInterval> | undefined;
+      const send = async (event: TeamEvent) => {
+        const { type, ...data } = event;
+        await stream.writeSSE({ event: type, data: JSON.stringify(data) });
+      };
+      try {
+        await send({
+          type: "status",
+          phase: "routing",
+          taskId: run.id,
+          conversationId: run.conversationId,
+          messageId: run.messageId,
+          userMessageId: run.userMessageId,
+        });
+        heartbeat = setInterval(() => {
+          void stream
+            .write(": heartbeat\n\n")
+            .catch(() => abort.abort("disconnected"));
+        }, 10000);
+        const plan = await engine.prepare(run.conversationId, abort.signal);
+        sources = plan.sources;
+        route = plan.route;
+        if (route === "safety_risk")
+          await send({ type: "safety", active: true });
+        if (plan.fixed) {
+          content = plan.fixed;
+          await send({ type: "delta", text: content });
+        } else
+          for await (const delta of engine.provider.generate(
+            plan.messages,
+            abort.signal,
+          )) {
+            abort.signal.throwIfAborted();
+            content += delta;
+            await send({ type: "delta", text: delta });
+            if (Date.now() - lastSave > 500) {
+              store.checkpoint(run.messageId, content);
+              lastSave = Date.now();
+            }
+          }
+        abort.signal.throwIfAborted();
+      } catch {
+        status =
+          abort.signal.aborted && abort.signal.reason !== "timeout"
+            ? "stopped"
+            : "error";
+        if (status === "error") {
+          const message = "回答暂时中断，已保存当前内容，请稍后重试。";
+          if (!content) content = message;
+          await send({
+            type: "error",
+            code: "GENERATION_FAILED",
+            message,
+          }).catch(() => {});
+        }
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+        clearTimeout(timeout);
+        store.finish(run, content, status, sources, route);
+        active.delete(run.id);
+        await send({
+          type: "done",
+          taskId: run.id,
+          messageId: run.messageId,
+          conversationId: run.conversationId,
+          sources,
+          status: status as "complete" | "stopped" | "error",
+          route,
+        }).catch(() => {});
+      }
+    });
+  });
+  app.use("/api/v1/admin/*", async (c, next) => {
+    if (!c.get("account").admin)
+      return c.json({ message: "需要管理员权限。" }, 403);
+    await next();
+  });
+  app.get("/api/v1/admin/status", (c) =>
+    c.json({
+      provider: config.AI_PROVIDER,
+      model: config.MODEL_NAME || null,
+      activeRuns: active.size,
+      documents: engine.knowledge.documents(),
+      quotas: store.db
+        .prepare(
+          "SELECT day,requests,tokens FROM quotas WHERE subject='global' ORDER BY day DESC LIMIT 7",
+        )
+        .all(),
+      corpus:
+        store.db
+          .prepare("SELECT value FROM settings WHERE key='corpus_version'")
+          .get() ?? null,
+    }),
+  );
+  app.post("/api/v1/admin/documents/:id/status", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (typeof body?.active !== "boolean")
+      return c.json({ message: "状态格式错误。" }, 400);
+    const n = engine.knowledge.publish(c.req.param("id"), body.active);
+    return n
+      ? c.json({ updated: true })
+      : c.json({ message: "资料不存在。" }, 404);
+  });
+  app.all("/api/*", (c) => c.json({ message: "接口不存在。" }, 404));
+  const web = resolve(config.root, "apps/web/dist");
+  if (existsSync(web)) {
+    app.use("*", serveStatic({ root: web }));
+    app.get("*", serveStatic({ root: web, path: "index.html" }));
+  }
+  return Object.assign(app, {
+    store,
+    engine,
+    shutdown: () => {
+      for (const r of active.values()) r.abort.abort("shutdown");
+    },
+  });
 }

@@ -14,9 +14,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.11",
+    "@wangxueban/contracts": "*",
+    "csv-parse": "^7.0.3",
     "hono": "^4.12.8",
-    "zod": "^4.4.3",
-    "@wangxueban/contracts": "*"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

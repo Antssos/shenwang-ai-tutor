@@ -154,7 +154,8 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
     const revision = ++viewRevisionRef.current;
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    let savedId = conversationId;
+    let savedId = conversationId,
+      accepted = false;
     try {
       await streamChat({
         request: {
@@ -166,6 +167,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
         signal: controller.signal,
         onEvent: (event) => {
           if (abortControllerRef.current !== controller) return;
+          if (event.type === "status" && event.userMessageId) accepted = true;
           if (
             (event.type === "status" || event.type === "done") &&
             event.conversationId
@@ -190,7 +192,7 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
     } finally {
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
-        if (savedId) {
+        if (savedId && accepted) {
           try {
             const saved = await loadConversation(savedId);
             if (viewRevisionRef.current === revision) {

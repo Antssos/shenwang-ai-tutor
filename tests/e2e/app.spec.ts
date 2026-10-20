@@ -126,3 +126,35 @@ test("a delayed history refresh cannot reopen a conversation after starting a ne
   await expect(page.getByText("今天想聊点什么？")).toBeVisible();
   await expect(page.locator(".message-row")).toHaveCount(0);
 });
+
+test("a pre-admission limit response leaves crisis help visible in an existing conversation", async ({
+  page,
+}) => {
+  await page.goto("/register");
+  await page.getByLabel("用户名").fill("erroruser");
+  await page.getByLabel("密码", { exact: true }).fill("browser-password");
+  await page.getByLabel("邀请码").fill("test-only-invitation");
+  await page.getByRole("button", { name: "注册并进入对话" }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await page.locator("textarea").last().fill("你好");
+  const firstRefresh = page.waitForResponse(
+    (r) => r.url().includes("/api/v1/history/") && r.status() === 200,
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await firstRefresh;
+  const help = "请联系身边可信任的成年人，遇到紧急危险请立即求助。";
+  await page.route("**/api/v1/chat/stream", (route) =>
+    route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      body: JSON.stringify({ message: help }),
+    }),
+  );
+  await page.locator("textarea").last().fill("我需要帮助");
+  const listRefresh = page.waitForResponse(
+    (r) => r.url().endsWith("/api/v1/history") && r.status() === 200,
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await listRefresh;
+  await expect(page.getByRole("alert")).toContainText(help);
+});

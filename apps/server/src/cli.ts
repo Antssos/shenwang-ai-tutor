@@ -32,6 +32,7 @@ try {
             args[1],
             config.EMBEDDING_API_KEY ? (text) => p.embed(text) : undefined,
             config.EMBEDDING_MODEL,
+            config.EMBEDDING_API_BASE,
           ),
         ),
       );

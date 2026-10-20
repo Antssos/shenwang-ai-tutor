@@ -17,7 +17,7 @@ import {
 import { constantTimeEqual } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { AppStore, type Account } from "./store.js";
-import { Engine } from "./engine.js";
+import { Engine, danger } from "./engine.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 type Vars = { account: Account };
@@ -33,6 +33,7 @@ export function createApp(
   >();
   const loginLimit = createRateLimiter(5, 60000),
     minuteLimit = createRateLimiter(10, 60000);
+  const safetyLimit = createRateLimiter(10, 60000);
   let authInFlight = 0;
   const cookie = "wangxueban_session";
   app.use(
@@ -237,6 +238,63 @@ export function createApp(
       Array.from(parsed.data.message).length > config.MAX_INPUT_LENGTH
     )
       return c.json({ message: "请检查问题内容。" }, 400);
+    if (
+      parsed.data.conversationId &&
+      !store.owned(user.id, parsed.data.conversationId)
+    )
+      return c.json({ message: "对话不存在。" }, 404);
+    const riskText = [
+      ...(parsed.data.conversationId
+        ? store
+            .messages(parsed.data.conversationId)
+            .filter((m) => m.role === "user")
+            .slice(-4)
+            .map((m) => m.content)
+        : []),
+      parsed.data.message,
+    ].join("\n");
+    if (danger(riskText)) {
+      const text = engine.routes.safety_risk.fixed!;
+      if (!safetyLimit(user.id))
+        return c.json({ code: "SAFETY_RATE_LIMITED", message: text }, 429);
+      let run: ReturnType<AppStore["beginRun"]>;
+      try {
+        run = store.admit(user.id, {
+          ...parsed.data,
+          conversationId: "",
+          editMessageId: undefined,
+        });
+      } catch {
+        return c.json({ code: "SAFETY_HELP", message: text }, 409);
+      }
+      store.recordVersions(run.id, engine.knowledge.version(), engine.version);
+      store.finish(run, text, "complete", [], "safety_risk");
+      return streamSSE(c, async (stream) => {
+        const events: TeamEvent[] = [
+          {
+            type: "status",
+            phase: "safety",
+            taskId: run.id,
+            conversationId: run.conversationId,
+            messageId: run.messageId,
+            userMessageId: run.userMessageId,
+          },
+          { type: "safety", active: true },
+          { type: "delta", text },
+          {
+            type: "done",
+            taskId: run.id,
+            messageId: run.messageId,
+            conversationId: run.conversationId,
+            sources: [],
+            route: "safety_risk",
+            status: "complete",
+          },
+        ];
+        for (const { type, ...data } of events)
+          await stream.writeSSE({ event: type, data: JSON.stringify(data) });
+      });
+    }
     if (store.priorRun(user.id, parsed.data.requestId))
       return c.json(
         {
@@ -268,21 +326,30 @@ export function createApp(
           16000) +
       config.MAX_OUTPUT_TOKENS +
       80;
-    if (
-      !store.reserve(
-        user.id,
-        reservation,
-        config.DAILY_REQUESTS,
-        config.DAILY_TOKEN_BUDGET,
-        config.GLOBAL_DAILY_TOKEN_BUDGET,
-      )
-    )
-      return c.json({ message: "今日使用额度已达上限，请明天再试。" }, 429);
     let run: ReturnType<AppStore["beginRun"]>;
     try {
-      run = store.beginRun(user.id, parsed.data);
-    } catch {
-      return c.json({ message: "对话无法继续，请新建对话或刷新重试。" }, 400);
+      run = store.admit(user.id, parsed.data, {
+        tokens: reservation,
+        requests: config.DAILY_REQUESTS,
+        userBudget: config.DAILY_TOKEN_BUDGET,
+        globalBudget: config.GLOBAL_DAILY_TOKEN_BUDGET,
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "INVALID_REQUEST";
+      return c.json(
+        {
+          code,
+          message:
+            code === "QUOTA_EXCEEDED"
+              ? "今日使用额度已达上限，请明天再试。"
+              : "对话无法继续，请新建对话或刷新重试。",
+        },
+        code === "QUOTA_EXCEEDED"
+          ? 429
+          : code === "DUPLICATE_REQUEST"
+            ? 409
+            : 400,
+      );
     }
     const abort = new AbortController(),
       timeout = setTimeout(
@@ -329,6 +396,19 @@ export function createApp(
         }, 10000);
         const plan = await engine.prepare(run.conversationId, abort.signal);
         sources = plan.sources;
+        store.recordVersions(
+          run.id,
+          plan.corpusVersion ?? engine.knowledge.version(),
+          engine.version,
+        );
+        const assertPublished = () => {
+          if (
+            sources.length &&
+            !engine.knowledge.current(plan.corpusVersion ?? "", sources)
+          )
+            throw new Error("Knowledge publication changed");
+        };
+        assertPublished();
         route = plan.route;
         if (route === "safety_risk")
           await send({ type: "safety", active: true });
@@ -341,6 +421,7 @@ export function createApp(
             abort.signal,
           )) {
             abort.signal.throwIfAborted();
+            assertPublished();
             content += delta;
             await send({ type: "delta", text: delta });
             if (Date.now() - lastSave > 500) {

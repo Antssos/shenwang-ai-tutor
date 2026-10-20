@@ -10,6 +10,7 @@ export type Source = z.infer<typeof sourceSchema>;
 export interface Evidence {
   source: Source;
   content: string;
+  corpusVersion?: string;
 }
 const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
 const stop = new Set([
@@ -58,16 +59,84 @@ export class Knowledge {
       )
       .all();
   }
+  version() {
+    return (
+      (
+        this.store.db
+          .prepare("SELECT value FROM settings WHERE key='corpus_version'")
+          .get() as { value: string } | undefined
+      )?.value ?? "empty"
+    );
+  }
+  private generation() {
+    return (
+      (
+        this.store.db
+          .prepare("SELECT value FROM settings WHERE key='corpus_generation'")
+          .get() as { value: string } | undefined
+      )?.value ?? "0"
+    );
+  }
+  private updateVersion() {
+    const documents = this.store.db
+      .prepare(
+        "SELECT id,title,knowledge_base,status,version,hash FROM documents ORDER BY id",
+      )
+      .all();
+    const embedding = this.store.db
+      .prepare("SELECT value FROM settings WHERE key='embedding_identity'")
+      .get() as { value: string } | undefined;
+    const version = createHash("sha256")
+      .update(
+        JSON.stringify({
+          documents,
+          chunker: "heading-char-v1:750:600",
+          tokenizer: "Intl.Segmenter:zh-CN",
+          embedding: embedding?.value ?? "none",
+        }),
+      )
+      .digest("hex");
+    this.store.db
+      .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
+      .run("corpus_version", version);
+    this.store.db
+      .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
+      .run("corpus_generation", String(Number(this.generation()) + 1));
+  }
+  current(version: string, sources: Source[]) {
+    return (
+      this.version() === version &&
+      sources.every((s) =>
+        Boolean(
+          this.store.db
+            .prepare(
+              "SELECT 1 FROM documents WHERE id=? AND status='active' AND version=?",
+            )
+            .get(s.documentId ?? "", s.version ?? ""),
+        ),
+      )
+    );
+  }
   publish(id: string, active: boolean) {
-    return this.store.db
-      .prepare("UPDATE documents SET status=? WHERE id=?")
-      .run(active ? "active" : "retired", id).changes;
+    return this.store.transaction(() => {
+      const changed = this.store.db
+        .prepare("UPDATE documents SET status=? WHERE id=?")
+        .run(active ? "active" : "retired", id).changes;
+      if (changed) {
+        this.store.db
+          .prepare("INSERT OR REPLACE INTO publication_overrides VALUES(?,?)")
+          .run(id, Number(active));
+        this.updateVersion();
+      }
+      return changed;
+    });
   }
   async import(
     root: string,
     manifest: string,
     embed?: (text: string[]) => Promise<number[][]>,
     model = "",
+    provider = "unspecified",
   ) {
     const base = realpathSync(root),
       rows = parse(readFileSync(manifest, "utf8").replace(/\r\n?/g, "\n"), {
@@ -87,6 +156,8 @@ export class Knowledge {
       hash: string;
     }[] = [];
     const seen = new Set<string>();
+    let dimension = 0,
+      totalChunks = 0;
     for (const row of rows.filter((r) => r.status === "active")) {
       if (
         !row.doc_id ||
@@ -131,6 +202,9 @@ export class Knowledge {
             });
         }
       }
+      totalChunks += chunks.length;
+      if (totalChunks > 5000)
+        throw new Error("Corpus exceeds bounded local index capacity");
       if (embed)
         for (let i = 0; i < chunks.length; i += 16) {
           const vectors = await embed(
@@ -139,8 +213,14 @@ export class Knowledge {
           if (vectors.length !== chunks.slice(i, i + 16).length)
             throw new Error("Embedding count mismatch");
           vectors.forEach((v, j) => {
-            if (!v.length || v.some((n) => !Number.isFinite(n)))
+            if (
+              !v.length ||
+              v.length > 4096 ||
+              v.some((n) => !Number.isFinite(n)) ||
+              (dimension && v.length !== dimension)
+            )
               throw new Error("Invalid vector");
+            dimension = v.length;
             chunks[i + j].vector = v;
           });
         }
@@ -162,7 +242,15 @@ export class Knowledge {
             row.doc_id,
             row.title || row.doc_id,
             row.knowledge_base,
-            "active",
+            (
+              this.store.db
+                .prepare(
+                  "SELECT active FROM publication_overrides WHERE document_id=?",
+                )
+                .get(row.doc_id) as { active: number } | undefined
+            )?.active === 0
+              ? "retired"
+              : "active",
             row.version || hash.slice(0, 12),
             hash,
           );
@@ -182,12 +270,18 @@ export class Knowledge {
             .run(c.id, terms(c.content).join(" "));
         }
       }
-      this.store.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?)").run(
-        "corpus_version",
-        createHash("sha256")
-          .update(documents.map((d) => d.hash).join(":"))
-          .digest("hex"),
-      );
+      this.store.db
+        .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
+        .run(
+          "embedding_identity",
+          JSON.stringify({
+            provider: embed ? provider : "none",
+            model: embed ? model : "none",
+            dimension,
+            normalization: "cosine",
+          }),
+        );
+      this.updateVersion();
     });
     return {
       documents: documents.length,
@@ -201,6 +295,8 @@ export class Knowledge {
     queryVector?: number[],
     model = "",
   ): Promise<Evidence[]> {
+    const generation = this.generation(),
+      corpusVersion = this.version();
     const tokens = terms(query).slice(0, 24);
     const keywords = tokens.length
       ? (this.store.db
@@ -249,32 +345,39 @@ export class Knowledge {
         rank.set(c.id, (rank.get(c.id) ?? 0) + 1 / (60 + i)),
       );
     }
+    if (this.generation() !== generation) return [];
     return [...rank]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
-      .map(([id]) => {
+      .flatMap(([id]) => {
         const row = this.store.db
           .prepare(
-            "SELECT c.content,c.section,c.id,d.id documentId,d.title,d.version FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=?",
+            "SELECT c.content,c.section,c.id,d.id documentId,d.title,d.version FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=? AND d.status='active' AND d.knowledge_base=?",
           )
-          .get(id) as {
-          content: string;
-          section: string;
-          id: string;
-          documentId: string;
-          title: string;
-          version: string;
-        };
-        return {
-          content: row.content,
-          source: {
-            title: row.title,
-            documentId: row.documentId,
-            version: row.version,
-            section: row.section,
-            chunkId: row.id,
+          .get(id, base) as
+          | {
+              content: string;
+              section: string;
+              id: string;
+              documentId: string;
+              title: string;
+              version: string;
+            }
+          | undefined;
+        if (!row) return [];
+        return [
+          {
+            corpusVersion,
+            content: row.content,
+            source: {
+              title: row.title,
+              documentId: row.documentId,
+              version: row.version,
+              section: row.section,
+              chunkId: row.id,
+            },
           },
-        };
+        ];
       });
   }
 }

@@ -216,3 +216,69 @@ describe("same-origin API", () => {
     expect(events(text).at(-1).status).toBe("stopped");
   });
 });
+
+it.each(["user", "global"] as const)(
+  "keeps crisis help reachable after %s paid budget is exhausted",
+  async (limit) => {
+    const config = loadConfig({
+        INVITE_CODE: "test-only-invitation",
+        DATABASE_PATH: ":memory:",
+        ...(limit === "user"
+          ? { DAILY_TOKEN_BUDGET: "1" }
+          : { GLOBAL_DAILY_TOKEN_BUDGET: "1" }),
+      }),
+      app = createApp(config);
+    apps.push(app);
+    const cookie = await register(app, "safetyuser");
+    expect(
+      (
+        await post(app, "/api/v1/chat/stream", cookie, {
+          message: "普通问题",
+          requestId: "ordinary",
+        })
+      ).status,
+    ).toBe(429);
+    const r = await post(app, "/api/v1/chat/stream", cookie, {
+      message: "我不想活了",
+      requestId: "crisis",
+    });
+    expect(r.status).toBe(200);
+    expect(events(await r.text()).at(-1).route).toBe("safety_risk");
+    expect(app.store.db.prepare("SELECT count(*) n FROM quotas").get()!.n).toBe(
+      0,
+    );
+  },
+);
+it("keeps fixed help outside generation capacity and independently bounds its writes", async () => {
+  const app = fixture(),
+    cookie = await register(app, "safetyuser");
+  const normal = await post(app, "/api/v1/chat/stream", cookie, {
+      message: "你好" + "苹果".repeat(50),
+      requestId: "busy",
+    }),
+    reader = normal.body!.getReader();
+  await reader.read();
+  const crisis = await post(app, "/api/v1/chat/stream", cookie, {
+    message: "我不想活了",
+    requestId: "while-busy",
+  });
+  expect(crisis.status).toBe(200);
+  expect(events(await crisis.text()).at(-1).route).toBe("safety_risk");
+  app.shutdown();
+  while (!(await reader.read()).done) {
+    /* finish cancellation before closing DB */
+  }
+  for (let i = 0; i < 9; i++)
+    await (
+      await post(app, "/api/v1/chat/stream", cookie, {
+        message: "我不想活了",
+        requestId: "crisis-" + i,
+      })
+    ).text();
+  const limited = await post(app, "/api/v1/chat/stream", cookie, {
+    message: "我不想活了",
+    requestId: "bounded",
+  });
+  expect(limited.status).toBe(429);
+  expect((await limited.json()).message).toContain("可信任");
+});

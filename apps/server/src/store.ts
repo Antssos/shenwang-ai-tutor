@@ -39,15 +39,22 @@ export class AppStore {
     }
     if (path !== ":memory:") chmodSync(path, 0o600);
   }
+  private transactionDepth = 0;
   transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+    const nested = this.transactionDepth > 0,
+      name = `tx_${this.transactionDepth}`;
+    this.db.exec(nested ? `SAVEPOINT ${name}` : "BEGIN IMMEDIATE");
+    this.transactionDepth++;
     try {
-      const v = fn();
-      this.db.exec("COMMIT");
-      return v;
-    } catch (e) {
-      this.db.exec("ROLLBACK");
-      throw e;
+      const result = fn();
+      this.db.exec(nested ? `RELEASE ${name}` : "COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec(nested ? `ROLLBACK TO ${name}` : "ROLLBACK");
+      if (nested) this.db.exec(`RELEASE ${name}`);
+      throw error;
+    } finally {
+      this.transactionDepth--;
     }
   }
   async createUser(
@@ -246,7 +253,9 @@ export class AppStore {
         .prepare("UPDATE conversations SET updated_at=? WHERE id=?")
         .run(now, id);
       this.db
-        .prepare("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)")
+        .prepare(
+          "INSERT INTO runs(id,user_id,conversation_id,request_key,message_id,status,route,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
         .run(
           runId,
           userId,
@@ -258,6 +267,34 @@ export class AppStore {
           now,
         );
       return { id: runId, conversationId: id, messageId, userMessageId };
+    });
+  }
+  admit(
+    userId: string,
+    input: Parameters<AppStore["beginRun"]>[1],
+    quota?: {
+      tokens: number;
+      requests: number;
+      userBudget: number;
+      globalBudget: number;
+    },
+  ) {
+    return this.transaction(() => {
+      if (this.priorRun(userId, input.requestId))
+        throw new Error("DUPLICATE_REQUEST");
+      const run = this.beginRun(userId, input);
+      if (
+        quota &&
+        !this.reserve(
+          userId,
+          quota.tokens,
+          quota.requests,
+          quota.userBudget,
+          quota.globalBudget,
+        )
+      )
+        throw new Error("QUOTA_EXCEEDED");
+      return run;
     });
   }
   finish(
@@ -278,6 +315,11 @@ export class AppStore {
         .prepare("UPDATE conversations SET updated_at=? WHERE id=?")
         .run(new Date().toISOString(), run.conversationId);
     });
+  }
+  recordVersions(id: string, corpus: string, policy: string) {
+    this.db
+      .prepare("UPDATE runs SET corpus_version=?,policy_version=? WHERE id=?")
+      .run(corpus, policy, id);
   }
   checkpoint(messageId: string, content: string) {
     this.db

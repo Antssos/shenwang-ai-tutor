@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "./config.js";
 import type { AppStore } from "./store.js";
-import { Provider, type ModelMessage } from "./provider.js";
+import {
+  Provider,
+  CLASSIFICATION_PROMPT,
+  type ModelMessage,
+} from "./provider.js";
 import { Knowledge, type Source } from "./knowledge.js";
 import type { Route } from "@wangxueban/contracts";
 export function danger(text: string) {
@@ -30,7 +34,8 @@ export class Engine {
     );
     this.version = createHash("sha256")
       .update(
-        JSON.stringify(this.routes) +
+        CLASSIFICATION_PROMPT +
+          JSON.stringify(this.routes) +
           ["study.md", "center.md", "general.md", "care.md"]
             .map((name) =>
               readFileSync(resolve(config.root, "prompts", name), "utf8"),
@@ -54,6 +59,7 @@ export class Engine {
     messages: ModelMessage[];
     fixed?: string;
     sources: Source[];
+    corpusVersion?: string;
   }> {
     const history = this.history(id),
       query = history.at(-1)?.content ?? "";
@@ -121,6 +127,7 @@ export class Engine {
     return {
       route,
       sources: evidence.map((e) => e.source),
+      corpusVersion: evidence[0]?.corpusVersion ?? this.knowledge.version(),
       messages: [
         {
           role: "system",

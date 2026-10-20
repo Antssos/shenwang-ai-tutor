@@ -80,3 +80,35 @@ it("content identity does not depend on manifest order", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+it("upgrades legacy metadata without losing an existing retirement decision", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "legacy-publication-")),
+    file = join(dir, "legacy.sqlite");
+  const legacy = new DatabaseSync(file);
+  legacy.exec(
+    readFileSync(
+      new URL("../../../db/migrations/001_initial.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  legacy.exec(
+    "CREATE TABLE migrations(name TEXT PRIMARY KEY); INSERT INTO migrations VALUES('001_initial.sql'); INSERT INTO documents VALUES('legacy','旧资料','center-public','retired','v1','body-hash'); INSERT INTO settings VALUES('corpus_version','old-body-only-hash');",
+  );
+  legacy.close();
+  const s = new AppStore(file);
+  try {
+    const k = new Knowledge(s);
+    expect(
+      s.db
+        .prepare("SELECT active FROM publication_overrides WHERE document_id=?")
+        .get("legacy")!.active,
+    ).toBe(0);
+    expect(k.version()).not.toBe("old-body-only-hash");
+    expect(k.documents()[0].status).toBe("retired");
+    expect(s.db.prepare("SELECT count(*) n FROM migrations").get()!.n).toBe(3);
+  } finally {
+    s.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

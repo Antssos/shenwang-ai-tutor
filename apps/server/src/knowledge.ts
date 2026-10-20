@@ -11,7 +11,27 @@ export interface Evidence {
   source: Source;
   content: string;
   corpusVersion?: string;
+  retrieval?: {
+    mode: string;
+    coverage: number;
+    cosine?: number;
+    fusion: number;
+  };
 }
+export const RETRIEVAL_POLICY =
+  "coverage-v1:center-lexical-0.5:other-0.5-or-cosine-0.8";
+const generic = new Set([
+  "中心",
+  "申望",
+  "课程",
+  "资料",
+  "介绍",
+  "了解",
+  "请问",
+  "时候",
+  "那",
+  "呢",
+]);
 const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
 const stop = new Set([
   "的",
@@ -51,7 +71,39 @@ export function terms(text: string) {
   ].slice(0, 200);
 }
 export class Knowledge {
-  constructor(readonly store: AppStore) {}
+  constructor(readonly store: AppStore) {
+    if (
+      !store.db
+        .prepare(
+          "SELECT 1 FROM settings WHERE key='corpus_identity_format' AND value='2'",
+        )
+        .get()
+    ) {
+      store.transaction(() => {
+        if (
+          !store.db
+            .prepare("SELECT 1 FROM settings WHERE key='embedding_identity'")
+            .get()
+        ) {
+          const legacy = store.db
+            .prepare(
+              "SELECT DISTINCT embedding_model model,json_array_length(vector) dimension FROM chunks WHERE vector IS NOT NULL ORDER BY model,dimension",
+            )
+            .all();
+          store.db
+            .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
+            .run(
+              "embedding_identity",
+              JSON.stringify({ provider: "legacy-unknown", indices: legacy }),
+            );
+        }
+        this.updateVersion();
+        store.db
+          .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
+          .run("corpus_identity_format", "2");
+      });
+    }
+  }
   documents() {
     return this.store.db
       .prepare(
@@ -93,6 +145,8 @@ export class Knowledge {
           chunker: "heading-char-v1:750:600",
           tokenizer: "Intl.Segmenter:zh-CN",
           embedding: embedding?.value ?? "none",
+          retrievalPolicy: RETRIEVAL_POLICY,
+          icu: process.versions.icu,
         }),
       )
       .digest("hex");
@@ -270,17 +324,15 @@ export class Knowledge {
             .run(c.id, terms(c.content).join(" "));
         }
       }
-      this.store.db
-        .prepare("INSERT OR REPLACE INTO settings VALUES(?,?)")
-        .run(
-          "embedding_identity",
-          JSON.stringify({
-            provider: embed ? provider : "none",
-            model: embed ? model : "none",
-            dimension,
-            normalization: "cosine",
-          }),
-        );
+      this.store.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?)").run(
+        "embedding_identity",
+        JSON.stringify({
+          provider: embed ? provider : "none",
+          model: embed ? model : "none",
+          dimension,
+          normalization: "cosine",
+        }),
+      );
       this.updateVersion();
     });
     return {
@@ -308,6 +360,8 @@ export class Knowledge {
             base,
           ) as { id: string }[])
       : [];
+    const meaningful = tokens.filter((t) => !generic.has(t)),
+      similarities = new Map<string, number>();
     const rank = new Map<string, number>();
     keywords.forEach((c, i) => rank.set(c.id, 1 / (60 + i)));
     if (queryVector) {
@@ -341,15 +395,15 @@ export class Knowledge {
           });
         },
       );
-      ranked.forEach((c, i) =>
-        rank.set(c.id, (rank.get(c.id) ?? 0) + 1 / (60 + i)),
-      );
+      ranked.forEach((c, i) => {
+        similarities.set(c.id, c.score);
+        rank.set(c.id, (rank.get(c.id) ?? 0) + 1 / (60 + i));
+      });
     }
     if (this.generation() !== generation) return [];
     return [...rank]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .flatMap(([id]) => {
+      .flatMap(([id, fusion]) => {
         const row = this.store.db
           .prepare(
             "SELECT c.content,c.section,c.id,d.id documentId,d.title,d.version FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=? AND d.status='active' AND d.knowledge_base=?",
@@ -365,9 +419,27 @@ export class Knowledge {
             }
           | undefined;
         if (!row) return [];
+        const normalized = row.content.normalize("NFKC").toLowerCase();
+        const coverage = meaningful.length
+          ? meaningful.filter((t) => normalized.includes(t)).length /
+            meaningful.length
+          : tokens.length
+            ? tokens.filter((t) => normalized.includes(t)).length /
+              tokens.length
+            : 0;
+        const cosine = similarities.get(id);
+        // Candidate guard only; deployed-model evidence quality still requires review.
+        if (coverage < 0.5 && (base === "center-public" || (cosine ?? 0) < 0.8))
+          return [];
         return [
           {
             corpusVersion,
+            retrieval: {
+              mode: queryVector ? "hybrid" : "keyword",
+              coverage,
+              cosine,
+              fusion,
+            },
             content: row.content,
             source: {
               title: row.title,
@@ -378,6 +450,7 @@ export class Knowledge {
             },
           },
         ];
-      });
+      })
+      .slice(0, 3);
   }
 }

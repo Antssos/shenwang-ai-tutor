@@ -316,10 +316,17 @@ export class AppStore {
         .run(new Date().toISOString(), run.conversationId);
     });
   }
-  recordVersions(id: string, corpus: string, policy: string) {
+  recordVersions(
+    id: string,
+    corpus: string,
+    policy: string,
+    retrieval: unknown[] = [],
+  ) {
     this.db
-      .prepare("UPDATE runs SET corpus_version=?,policy_version=? WHERE id=?")
-      .run(corpus, policy, id);
+      .prepare(
+        "UPDATE runs SET corpus_version=?,policy_version=?,retrieval_json=? WHERE id=?",
+      )
+      .run(corpus, policy, JSON.stringify(retrieval), id);
   }
   checkpoint(messageId: string, content: string) {
     this.db

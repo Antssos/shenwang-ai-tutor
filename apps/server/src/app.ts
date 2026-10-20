@@ -18,6 +18,7 @@ import { constantTimeEqual } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { AppStore, type Account } from "./store.js";
 import { Engine, danger } from "./engine.js";
+import { clientAddress, createFailureLimiter } from "./clientIdentity.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 type Vars = { account: Account };
@@ -31,8 +32,10 @@ export function createApp(
     string,
     { userId: string; conversationId: string; abort: AbortController }
   >();
-  const loginLimit = createRateLimiter(5, 60000),
+  const loginLimit = createRateLimiter(120, 60000),
     minuteLimit = createRateLimiter(10, 60000);
+  const authFailures = createFailureLimiter(5, 60000),
+    authGlobal = createRateLimiter(120, 60000);
   const safetyLimit = createRateLimiter(10, 60000);
   let authInFlight = 0;
   const cookie = "wangxueban_session";
@@ -83,16 +86,20 @@ export function createApp(
     }
     await next();
   });
-  app.onError((_, c) =>
-    c.json(
-      {
-        code: "INTERNAL_ERROR",
-        message: "服务暂时不可用。",
-        requestId: randomUUID(),
-      },
+  app.onError((error, c) => {
+    const requestId = randomUUID();
+    console.error(
+      JSON.stringify({
+        event: "request_failed",
+        requestId,
+        errorType: /^[A-Za-z]+Error$/.test(error.name) ? error.name : "Error",
+      }),
+    );
+    return c.json(
+      { code: "INTERNAL_ERROR", message: "服务暂时不可用。", requestId },
       500,
-    ),
-  );
+    );
+  });
   app.get("/health/live", (c) => c.json({ status: "ok" }));
   app.get("/health/ready", (c) => {
     store.db.prepare("SELECT 1").get();
@@ -130,7 +137,7 @@ export function createApp(
   });
   for (const path of ["login", "register"] as const)
     app.post("/api/v1/" + path, async (c) => {
-      // The app never trusts caller-supplied X-Forwarded-For; direct socket identity only.
+      // An explicitly trusted ingress must overwrite X-Real-IP; X-Forwarded-For is never used.
       let ip = "local";
       try {
         const info = getConnInfo(c);
@@ -138,21 +145,32 @@ export function createApp(
       } catch {
         /* in-process tests */
       }
-      if (!loginLimit(path + ":" + ip) || authInFlight >= 2)
+      ip = clientAddress(ip, c.req.header("x-real-ip"), config.trustedProxyIps);
+      if (
+        !authGlobal("auth") ||
+        !loginLimit(path + ":" + ip) ||
+        authInFlight >= 2
+      )
         return c.json({ message: "尝试次数过多，请稍后再试。" }, 429);
       const parsed = (
         path === "register" ? registerSchema : credentialsSchema
       ).safeParse(await c.req.json().catch(() => null));
       if (!parsed.success)
         return c.json({ message: "请检查用户名、密码和邀请码。" }, 400);
+      const accountKey =
+        path + ":" + parsed.data.username.normalize("NFKC").toLowerCase();
+      if (!authFailures.allowed(accountKey))
+        return c.json({ message: "尝试次数过多，请稍后再试。" }, 429);
       if (
         path === "register" &&
         !constantTimeEqual(
           "inviteCode" in parsed.data ? String(parsed.data.inviteCode) : "",
           config.INVITE_CODE,
         )
-      )
+      ) {
+        authFailures.fail(accountKey);
         return c.json({ message: "邀请码不正确。" }, 403);
+      }
       authInFlight++;
       try {
         const u =
@@ -162,7 +180,8 @@ export function createApp(
                 parsed.data.username,
                 parsed.data.password,
               );
-        if (!u)
+        if (!u) {
+          authFailures.fail(accountKey);
           return c.json(
             {
               message:
@@ -170,6 +189,7 @@ export function createApp(
             },
             path === "register" ? 409 : 401,
           );
+        }
         setCookie(c, cookie, store.createSession(u.id).token, {
           httpOnly: true,
           secure: config.COOKIE_SECURE === "true",
@@ -229,6 +249,7 @@ export function createApp(
     return c.json({ result: "success" });
   });
   app.post("/api/v1/chat/stream", async (c) => {
+    const requestStarted = Date.now();
     const user = c.get("account"),
       parsed = chatRequestSchema.safeParse(
         await c.req.json().catch(() => null),
@@ -374,6 +395,7 @@ export function createApp(
         sources: Awaited<ReturnType<Engine["prepare"]>>["sources"] = [],
         route: Awaited<ReturnType<Engine["prepare"]>>["route"] = "unsupported",
         status = "complete",
+        firstTextMs: number | undefined,
         lastSave = Date.now(),
         heartbeat: ReturnType<typeof setInterval> | undefined;
       const send = async (event: TeamEvent) => {
@@ -400,6 +422,7 @@ export function createApp(
           run.id,
           plan.corpusVersion ?? engine.knowledge.version(),
           engine.version,
+          plan.retrieval,
         );
         const assertPublished = () => {
           if (
@@ -414,6 +437,7 @@ export function createApp(
           await send({ type: "safety", active: true });
         if (plan.fixed) {
           content = plan.fixed;
+          firstTextMs = Date.now() - requestStarted;
           await send({ type: "delta", text: content });
         } else
           for await (const delta of engine.provider.generate(
@@ -422,6 +446,7 @@ export function createApp(
           )) {
             abort.signal.throwIfAborted();
             assertPublished();
+            firstTextMs ??= Date.now() - requestStarted;
             content += delta;
             await send({ type: "delta", text: delta });
             if (Date.now() - lastSave > 500) {
@@ -455,6 +480,8 @@ export function createApp(
         console.info(
           JSON.stringify({
             event: "generation_finished",
+            elapsedMs: Date.now() - requestStarted,
+            firstTextMs,
             runId: run.id,
             route,
             status,

@@ -35,9 +35,20 @@ describe("knowledge publishing and retrieval", () => {
       expect(result[0].source.documentId).toBe("center");
       expect(await kb.search("五子棋", "learning")).toEqual([]);
       expect(
-        (await kb.search("不可匹配词", "center-public", [1, 0], "fixture"))[0]
-          .source.documentId,
-      ).toBe("center");
+        await kb.search("不可匹配词", "center-public", [1, 0], "fixture"),
+      ).toEqual([]);
+      expect(
+        (await kb.search("水果", "learning", [0, 1], "fixture"))[0].source
+          .documentId,
+      ).toBe("study");
+      expect(
+        await kb.search(
+          "中心的收款银行卡号是什么",
+          "center-public",
+          [1, 0],
+          "fixture",
+        ),
+      ).toEqual([]);
       kb.publish("center", false);
       expect(await kb.search("五子棋课程", "center-public")).toEqual([]);
       expect(kb.documents()).toHaveLength(2);
@@ -62,4 +73,31 @@ describe("knowledge publishing and retrieval", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+it("recovers relevant context for an elliptical question while rejecting an unrelated institution fact", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wx-evidence-")),
+    s = new AppStore(":memory:"),
+    kb = new Knowledge(s);
+  try {
+    writeFileSync(
+      join(root, "doc.md"),
+      "# 中心课程\n中心五子棋课程在周六开放。",
+    );
+    writeFileSync(
+      join(root, "manifest.csv"),
+      "doc_id,clean_file,title,knowledge_base,status,version\ncenter,doc.md,中心课程,center-public,active,v1\n",
+    );
+    await kb.import(root, join(root, "manifest.csv"));
+    expect(
+      await kb.search("中心的收款银行卡号是什么", "center-public"),
+    ).toEqual([]);
+    expect(
+      (
+        await kb.search("中心五子棋课程什么时候开放 那周日呢", "center-public")
+      )[0].retrieval?.coverage,
+    ).toBeGreaterThanOrEqual(0.5);
+  } finally {
+    s.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

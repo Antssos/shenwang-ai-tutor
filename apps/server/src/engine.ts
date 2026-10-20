@@ -8,12 +8,26 @@ import {
   CLASSIFICATION_PROMPT,
   type ModelMessage,
 } from "./provider.js";
-import { Knowledge, type Source } from "./knowledge.js";
+import { Knowledge, RETRIEVAL_POLICY, type Source } from "./knowledge.js";
 import type { Route } from "@wangxueban/contracts";
+export const DANGER_PATTERN =
+  /自杀|自残|不想活|杀死|杀了|伤害自己|割腕|跳楼|性侵|猥亵|虐待|被打|打我|被跟踪|被绑架/;
 export function danger(text: string) {
-  return /自杀|自残|不想活|杀死|杀了|伤害自己|割腕|跳楼|性侵|猥亵|虐待|被打|打我|被跟踪|被绑架/.test(
-    text,
-  );
+  return DANGER_PATTERN.test(text);
+}
+export function retrievalQuery(history: ModelMessage[]) {
+  const current = history.at(-1)?.content ?? "";
+  if (
+    current.length <= 40 &&
+    /^(那|它|这|还有|那么|上面|刚才|前面)/.test(current)
+  ) {
+    const previous = history
+      .slice(0, -1)
+      .reverse()
+      .find((m) => m.role === "user");
+    if (previous) return previous.content.slice(0, 300) + " " + current;
+  }
+  return current;
 }
 export class Engine {
   readonly version: string;
@@ -34,7 +48,9 @@ export class Engine {
     );
     this.version = createHash("sha256")
       .update(
-        CLASSIFICATION_PROMPT +
+        DANGER_PATTERN.source +
+          RETRIEVAL_POLICY +
+          CLASSIFICATION_PROMPT +
           JSON.stringify(this.routes) +
           ["study.md", "center.md", "general.md", "care.md"]
             .map((name) =>
@@ -60,13 +76,15 @@ export class Engine {
     fixed?: string;
     sources: Source[];
     corpusVersion?: string;
+    retrieval?: unknown[];
   }> {
     const history = this.history(id),
-      query = history.at(-1)?.content ?? "";
+      query = retrievalQuery(history);
     let route: Route;
     if (
       danger(
         history
+          .filter((m) => m.role === "user")
           .slice(-5)
           .map((m) => m.content)
           .join("\n"),
@@ -128,6 +146,10 @@ export class Engine {
       route,
       sources: evidence.map((e) => e.source),
       corpusVersion: evidence[0]?.corpusVersion ?? this.knowledge.version(),
+      retrieval: evidence.map((e) => ({
+        documentId: e.source.documentId,
+        ...e.retrieval,
+      })),
       messages: [
         {
           role: "system",

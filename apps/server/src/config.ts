@@ -1,6 +1,8 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 import { resolve } from "node:path";
 const schema = z.object({
+  TRUSTED_PROXY_IPS: z.string().default(""),
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   APP_ORIGIN: z.string().url().default("http://127.0.0.1:3000"),
@@ -55,8 +57,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     )
       throw new Error("Provider endpoints require HTTPS");
   }
+  const trustedProxyIps = c.TRUSTED_PROXY_IPS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (trustedProxyIps.some((ip) => !isIP(ip)))
+    throw new Error("Trusted proxies must be exact IP addresses");
   return {
     ...c,
+    trustedProxyIps,
     APP_ORIGIN: new URL(c.APP_ORIGIN).origin,
     root: resolve(import.meta.dirname, "../../.."),
   };

@@ -282,3 +282,57 @@ it("keeps fixed help outside generation capacity and independently bounds its wr
   expect(limited.status).toBe(429);
   expect((await limited.json()).message).toContain("可信任");
 });
+it("allows successful users behind a shared socket while bounding failed account attempts", async () => {
+  const app = fixture();
+  for (let i = 0; i < 6; i++) await register(app, "shared-" + i);
+  for (let i = 0; i < 5; i++)
+    expect(
+      (
+        await post(app, "/api/v1/login", "", {
+          username: "shared-0",
+          password: "incorrect-password",
+        })
+      ).status,
+    ).toBe(401);
+  expect(
+    (
+      await post(app, "/api/v1/login", "", {
+        username: "shared-0",
+        password: "password-123",
+      })
+    ).status,
+  ).toBe(429);
+  expect(
+    (
+      await post(app, "/api/v1/login", "", {
+        username: "shared-1",
+        password: "password-123",
+      })
+    ).status,
+  ).toBe(200);
+});
+it("does not invoke an unavailable supplier for an explicitly recognized crisis", async () => {
+  const app = createApp(
+    loadConfig({
+      INVITE_CODE: "test-only-invitation",
+      DATABASE_PATH: ":memory:",
+      AI_PROVIDER: "openai",
+      MODEL_API_KEY: "synthetic-not-a-real-key",
+      MODEL_NAME: "fixture",
+    }),
+  );
+  apps.push(app);
+  const { vi } = await import("vitest");
+  const classify = vi
+      .spyOn(app.engine.provider, "classify")
+      .mockRejectedValue(new Error("unavailable")),
+    generate = vi.spyOn(app.engine.provider, "generate");
+  const cookie = await register(app, "supplier-user"),
+    r = await post(app, "/api/v1/chat/stream", cookie, {
+      message: "我不想活了",
+      requestId: "crisis-no-supplier",
+    });
+  expect(events(await r.text()).at(-1).route).toBe("safety_risk");
+  expect(classify).not.toHaveBeenCalled();
+  expect(generate).not.toHaveBeenCalled();
+});

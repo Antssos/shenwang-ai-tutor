@@ -1,0 +1,1 @@
+ALTER TABLE runs ADD COLUMN retrieval_json TEXT NOT NULL DEFAULT '[]';

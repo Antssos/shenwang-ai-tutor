@@ -34,3 +34,15 @@ Import uses active-only manifests, canonical path checks, hashes and versioned c
 Browser tests use a marked deterministic provider; protocol tests use a synthetic HTTP upstream. These validate UI/API behavior and protocol handling, not real model authorization, latency or answer quality. Before enabling AI, verify real chat/embeddings from the target machine and review routing, evidence, refusals, crisis handling and prompt injection.
 
 The old BFF database schema is not automatically imported. The handoff supplied no database backup; recovered historical data requires a separately validated offline importer.
+
+## Publication, admission and protocol boundaries
+
+Operator publication decisions persist independently of imported content. Reimport preserves retirement; explicit admin publication is required to restore it. Retrieval rechecks publication/library and index generation after asynchronous vector scoring. Runs record corpus/policy versions and score metadata; generation rechecks evidence before contacting the provider and before forwarding each delta. Retirement stops subsequent output when observed, but cannot retract context already sent to an upstream provider.
+
+Recognized crisis requests use an authenticated, body-limited and independently rate-limited fixed response, without reserving paid tokens or acquiring a generation slot. They create a separate safety conversation so even a full ordinary conversation cannot block help. If that independent limiter rejects a request, its response still contains the fixed help text. This keyword path complements classification and is not a complete crisis detector.
+
+Normal task creation, validation, idempotency and paid reservation are one database transaction: rejected edits/full conversations/failed inserts do not spend quota. Accepted failures and cancellation retain the conservative reservation policy.
+
+`[DONE]` or `finish_reason=stop` terminates the provider read without requiring HTTP EOF; trailing usage is not used for billing. Length truncation, content filtering, unsupported tools and premature EOF are incomplete/error outcomes. JSON response bytes, embedding batches/dimensions/indices and generation frame/output bytes have explicit bounds.
+
+Candidate retrieval has a conservative lexical coverage guard; center-information candidates require lexical support even when a vector score is high. Other libraries can use high semantic similarity. Short elliptical follow-ups append bounded preceding user context rather than inventing a rewritten topic. Coverage/cosine settings are provisional guards, not calibrated quality claims; deployed-model routing, relevance, refusal and multi-turn accuracy remain acceptance work after controlled deployment.

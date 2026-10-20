@@ -14,18 +14,27 @@ interface Status {
   documents: Document[];
   quotas: { day: string; requests: number; tokens: number }[];
 }
+async function loadStatus(signal?: AbortSignal): Promise<Status> {
+  const r = await fetch("/api/v1/admin/status", { signal });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.message ?? "无法读取状态");
+  return body;
+}
 export function AdminPage() {
   const [data, setData] = useState<Status | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function refresh() {
-    const r = await fetch("/api/v1/admin/status");
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.message ?? "无法读取状态");
-    setData(body);
+    setData(await loadStatus());
   }
   useEffect(() => {
-    void refresh().catch((e) => setError(String(e.message)));
+    const controller = new AbortController();
+    void loadStatus(controller.signal)
+      .then(setData)
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(String(e.message));
+      });
+    return () => controller.abort();
   }, []);
   async function toggle(doc: Document) {
     setBusy(true);

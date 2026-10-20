@@ -39,7 +39,7 @@ npm run test:e2e
 
 `AI_PROVIDER=disabled` 时账号、历史和固定安全回复可用，页面明确提示 AI 未配置。启用真实模型需设置 `AI_PROVIDER=openai`、`MODEL_API_BASE`、`MODEL_API_KEY`、`MODEL_NAME`；支持 OpenAI 兼容接口。模型名称以供应商实际可用值为准。
 
-知识正文只存于私有 `Antssos/cloudcodex` 仓库的 `internal/shenwang-ai-tutor` 分支、`shenwang-ai-tutor-internal/knowledge/`。本仓库不包含真实知识正文。导入工具只读取 manifest 中的 active 文件，严格分库，限制最多 5,000 个片段；重新导入采用完整、事务化替换：
+知识正文只存于私有 `Antssos/cloudcodex` 仓库的 `internal/shenwang-ai-tutor` 分支、`shenwang-ai-tutor-internal/knowledge/`。本仓库不包含真实知识正文。导入工具只读取 manifest 中的 active 文件，严格分库，限制最多 5,000 个片段；重新导入采用完整、事务化替换；管理员下架覆盖独立持久化，普通重建不会重新发布已下架资料：
 
 ```bash
 npm run cli -- import /secure/path/knowledge /secure/path/knowledge/_management/document_manifest.csv

@@ -193,13 +193,14 @@ export function ChatPage({ username, onLogout }: ChatPageProps) {
         if (savedId) {
           try {
             const saved = await loadConversation(savedId);
-            if (viewRevisionRef.current !== revision) return;
-            dispatch({
-              type: "hydrate",
-              messages: saved.messages,
-              conversationId: saved.id,
-            });
-            setActiveLocalId(saved.id);
+            if (viewRevisionRef.current === revision) {
+              dispatch({
+                type: "hydrate",
+                messages: saved.messages,
+                conversationId: saved.id,
+              });
+              setActiveLocalId(saved.id);
+            }
           } catch {
             setHistoryError("暂时无法刷新对话记录。");
           }

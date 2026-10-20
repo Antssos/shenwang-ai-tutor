@@ -1,79 +1,83 @@
-# 申望 AI 助教（望学伴）
+# 望学伴
 
-面向儿童课后学习、情绪陪伴和公益服务咨询场景的 AI 助手。当前版本由响应式 Web 前端、安全代理 BFF 和自建 Dify 社区版组成，模型计算通过外部 API 完成，不在服务器本地运行大模型。
+面向儿童课后学习、一般情绪支持和公益服务咨询的 AI 助手。React 静态前端与 Hono API 同源运行，SQLite 保存账号、会话、消息、知识索引和额度；通过外部模型 API 完成分类与生成。无需 Dify、Netlify、Tunnel 或本地大模型。
 
-> 当前处于小范围试点准备阶段。知识库清单仍标记为 `draft`，不得将儿童姓名、联系方式、学校班级、照片、病史等隐私资料提交到 Git。
+## 开发与验证
 
-## 当前进度
+需要 Node.js 24、npm。首次配置：
 
-- Web：已完成中文首页、账号入口、服务端聊天记录、Markdown/LaTeX 渲染、消息编辑和流式回答。
-- BFF：已完成账号注册登录、SQLite 持久化、密码摘要、HttpOnly 会话、Dify Key 隔离、限流和 SSE 转换。
-- Dify：社区版已部署到阿里云，代表性学习、中心信息、情绪、安全和边界问题已联调。
-- 部署：前端使用 Netlify；BFF 的 Docker Compose 已包含持久化数据卷，公网 HTTPS 入口尚待配置。
-- 微信小程序：仅保留目录，尚未开发。
-
-## 系统结构
-
-```text
-浏览器
-  └─ Web（React + Vite，开发时 127.0.0.1:4173）
-       └─ BFF（Hono，开发时 127.0.0.1:3000）
-            └─ Dify Service API（阿里云服务器内部）
-                 └─ 外部模型 API + Dify 知识库
+```bash
+npm ci
+cp .env.example .env
+# 在本地 .env 中设置随机 INVITE_CODE，Vite 开发时设 APP_ORIGIN=http://127.0.0.1:4173。
+# 模型参数通过受控配置提供。
+set -a
+. ./.env
+set +a
+npm run dev
 ```
 
-浏览器不直接访问 Dify，也不会得到 Dify Key。Dify 管理后台继续通过 SSH 隧道访问。
+浏览器打开 `http://127.0.0.1:4173`；Vite 将 `/api` 转发到 `127.0.0.1:3000`。生产构建由后端直接提供页面：
 
-## 目录
+```bash
+npm run check
+npm run build
+npm start
+```
 
-| 目录 | 内容 |
+此时打开 `http://127.0.0.1:3000`。`.env` 必须先导出到当前进程环境；容器使用 `env_file` 自动读取。`APP_ORIGIN` 必须与浏览器地址一致；Vite 开发时设为 `http://127.0.0.1:4173`。
+
+端到端测试使用一次性 SQLite、合成知识和明确标记的测试模型，不读取真实账号或密钥：
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+# 使用系统 Chromium 时：PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium npm run test:e2e
+```
+
+## 模型与资料
+
+`AI_PROVIDER=disabled` 时账号、历史和固定安全回复可用，页面明确提示 AI 未配置。启用真实模型需设置 `AI_PROVIDER=openai`、`MODEL_API_BASE`、`MODEL_API_KEY`、`MODEL_NAME`；支持 OpenAI 兼容接口。模型名称以供应商实际可用值为准。
+
+知识正文只存于私有 `Antssos/cloudcodex` 仓库的 `internal/shenwang-ai-tutor` 分支、`shenwang-ai-tutor-internal/knowledge/`。本仓库不包含真实知识正文。导入工具只读取 manifest 中的 active 文件，严格分库，限制最多 5,000 个片段；重新导入采用完整、事务化替换；管理员下架覆盖独立持久化，普通重建不会重新发布已下架资料：
+
+```bash
+npm run cli -- import /secure/path/knowledge /secure/path/knowledge/_management/document_manifest.csv
+npm run cli -- doctor
+```
+
+配置 `EMBEDDING_API_BASE`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL` 后导入会建立语义索引；否则使用中文分词关键词检索。改变嵌入模型必须重新导入，不能混用旧索引。无可靠资料时返回资料不足。提示词在 `prompts/`，六类路由在 `config/routes.json`。
+
+## 账号、历史与管理
+
+- 使用服务端邀请码注册，异步 scrypt 保存密码摘要；HttpOnly/SameSite=Lax 会话 Cookie。
+- 服务端保存生成任务、消息状态和来源；浏览器不能回写伪造历史。编辑重生成建立保留前文的新分支，旧分支保留。
+- API 和管理页面均检查账号；停止任务、读取/删除对话验证归属。配额保存在 SQLite，按账号和全局分别控制。
+- 先注册管理账号，再在受控终端执行 `npm run cli -- admin USERNAME`。登录后访问 `/admin` 查看资料、发布/下架与预算状态。
+- `npm run cli -- disable USERNAME` 停用账号并撤销会话。
+- Token 预算是保守预留上限，包含分类、上下文、证据和最大输出，失败/停止也不退还预留，不能当作实际供应商账单。
+
+## 部署与恢复
+
+见 [部署说明](deploy/README.md)。支持不绑定域名的回环端口与 SSH 转发；默认不开放公网应用端口。按 Compose 设置 384 MiB 内存上限、0.5 核 CPU，并与其他项目分开卷和网络。
+
+```bash
+npm run cli -- backup /secure/backup/wangxueban.sqlite
+npm run cli -- cleanup
+```
+
+数据库备份应加密后保存到本机之外。恢复时停止应用，将备份放回配置的数据路径并确认权限，再运行 doctor。默认历史保留 90 天；定期清理按 `RETENTION_DAYS` 执行。
+
+## 代码入口
+
+| 路径 | 内容 |
 |---|---|
-| `web/` | React + TypeScript + Vite 前端 |
-| `worker/` | Hono + TypeScript BFF |
-| `deploy/` | BFF 独立 Docker Compose 和服务器说明 |
-| `docs/` | 技术方案、协作说明、接口说明和 Dify DSL |
-| `knowledge/_management/` | 可提交的知识库规则与清单模板 |
-| `tools/` | 知识库清洗、切分和检查脚本 |
-| `miniprogram/` | 微信小程序预留目录 |
+| `apps/web/` | 页面、聊天流状态与同源客户端 |
+| `apps/server/src/app.ts` | HTTP、认证边界、流式生命周期 |
+| `apps/server/src/store.ts`、`db/migrations/` | 数据所有权、迁移与配额 |
+| `apps/server/src/knowledge.ts`、`provider.ts`、`engine.ts` | 检索、供应商协议与六路由 |
+| `packages/contracts/` | 共用 Zod 契约 |
+| `tests/e2e/` | 可复现浏览器联调 |
+| `deploy/` | 单容器资源和运行配置 |
 
-真实知识库内容位于本地并被 `.gitignore` 排除，不属于可公开源码。
-
-## 本地联调
-
-需要三个独立终端，按顺序保持运行：
-
-1. `ssh dify`：建立到服务器 Dify 的 SSH 隧道。
-2. 在 `worker/` 设置本地环境变量后运行 `npm.cmd start`。
-3. 在 `web/` 运行 `npm.cmd run dev`，打开 `http://127.0.0.1:4173`。
-
-详细命令分别见 [`worker/README.md`](worker/README.md) 和 [`web/README.md`](web/README.md)。
-
-## 验证
-
-```powershell
-cd worker
-npm.cmd test
-npm.cmd run build
-
-cd ..\web
-npm.cmd test
-npm.cmd run lint
-npm.cmd run build
-```
-
-## 部署
-
-- 前端：Netlify 托管 `web/`，只配置公开的 `VITE_API_BASE_URL`。
-- BFF：阿里云 Docker 常驻，只监听宿主机 `127.0.0.1:3000`。
-- 公网入口：正式 Cloudflare Tunnel 将 HTTPS 请求转发到 BFF，不开放公网 3000 端口。
-- Dify：保持现有独立 Compose，不由本仓库的部署文件管理。
-
-完整设计见 [`docs/前端v0.1技术方案.md`](docs/前端v0.1技术方案.md)，服务器操作入口见 [`deploy/README.md`](deploy/README.md)。
-
-## 安全规则
-
-- 禁止提交 `.env`、API Key、访问码、SSH 私钥和模型供应商凭据。
-- 禁止提交未经脱敏和授权的儿童资料或原始课程数据。
-- 正式 BFF 必须使用服务端邀请码、精确 CORS、HTTPS Cookie 和持久化数据库备份。
-- 日志不得记录完整问题、回答正文和儿童身份信息。
-- 发布前必须完成知识授权、隐私合规、安全边界和回滚验证。
+小程序、多模态和 Office 文件解析未实现。运行记录、交接包和内部分析统一保存在上述私有仓库，旧 Dify 方案仅作历史参考。

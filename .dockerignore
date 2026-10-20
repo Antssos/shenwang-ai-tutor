@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.sqlite*
+**/*.db
+**/*.log
+knowledge
+知识库
+data
+test-results
+playwright-report
+.artifacts

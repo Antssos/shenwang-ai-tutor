@@ -1,0 +1,15 @@
+{
+  "study_question": { "knowledgeBase": "learning", "prompt": "study.md" },
+  "center_information": {
+    "knowledgeBase": "center-public",
+    "prompt": "center.md"
+  },
+  "general_chat": { "prompt": "general.md" },
+  "emotional_support": { "knowledgeBase": "care-support", "prompt": "care.md" },
+  "safety_risk": {
+    "fixed": "你说的情况可能需要可信任的成年人马上帮助。请先远离危险，联系身边的老师、家长、中心老师或其他你信任的大人；如果某个大人让你不安全，请向另一个可信任的大人求助。遇到紧急危险请联系当地紧急救援。"
+  },
+  "unsupported": {
+    "fixed": "当前问题暂时不在我的可靠帮助范围内。你可以问我学习问题，或者询问申望儿童关爱服务中心的相关信息。"
+  }
+}
